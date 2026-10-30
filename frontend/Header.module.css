@@ -1,0 +1,28 @@
+.container,
+.left,
+.right {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5em;
+}
+
+.container {
+  justify-content: space-between;
+  padding: 1.25em 0;
+  font-size: var(--secondary-font-size);
+}
+
+.status,
+.statusError {
+  align-self: center;
+}
+
+.status {
+  color: var(--font-color);
+  font-style: italic;
+}
+
+.statusError {
+  background-color: var(--output-highlight-error-bg-color);
+  color: var(--output-highlight-error-color);
+}

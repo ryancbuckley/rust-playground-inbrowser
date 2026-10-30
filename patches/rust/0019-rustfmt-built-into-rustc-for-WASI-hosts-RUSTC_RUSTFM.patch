@@ -1,0 +1,201 @@
+From 9b71491fc9554d2bfc49a921dc6a547a400ebc8b Mon Sep 17 00:00:00 2001
+From: Ryan Buckley <10402042+ryancbuckley@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 12:03:12 -0400
+Subject: [PATCH] rustfmt built into rustc for WASI hosts (RUSTC_RUSTFMT=1)
+
+As with Clippy, without dylibs a separate rustfmt would carry a second copy
+of the compiler crates it uses. On WASI, rustc links rustfmt, and with
+RUSTC_RUSTFMT set it is `rustfmt [--edition E] FILE...`, formatting the
+files in place (compiler/rustc/src/rustfmt.rs). rustfmt gets Cargo
+dependencies on the compiler crates it uses through extern crate, and,
+built as a compiler crate, allows the lints that then apply to it.
+---
+ Cargo.lock                    | 12 +++++++
+ compiler/rustc/Cargo.toml     |  2 ++
+ compiler/rustc/src/main.rs    |  6 ++++
+ compiler/rustc/src/rustfmt.rs | 61 +++++++++++++++++++++++++++++++++++
+ src/tools/rustfmt/Cargo.toml  | 14 ++++++++
+ src/tools/rustfmt/src/lib.rs  |  4 +++
+ 6 files changed, 99 insertions(+)
+ create mode 100644 compiler/rustc/src/rustfmt.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index f4f4654c2..78784baa7 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3922,6 +3922,7 @@ dependencies = [
+  "rustc_public_bridge",
+  "rustc_session",
+  "rustc_windows_rc",
++ "rustfmt-nightly",
+  "tikv-jemalloc-sys",
+  "wasi 0.14.2+wasi-0.2.4",
+ ]
+@@ -5584,12 +5585,23 @@ dependencies = [
+  "insta",
+  "itertools",
+  "regex",
++ "rustc_ast",
++ "rustc_ast_pretty",
++ "rustc_data_structures",
++ "rustc_driver",
++ "rustc_errors",
++ "rustc_expand",
++ "rustc_feature",
++ "rustc_parse",
++ "rustc_session",
++ "rustc_span",
+  "rustfmt-config_proc_macro",
+  "semver",
+  "serde",
+  "serde_json",
+  "tempfile",
+  "term",
++ "thin-vec",
+  "thiserror 1.0.69",
+  "toml 1.1.0+spec-1.1.0",
+  "tracing",
+diff --git a/compiler/rustc/Cargo.toml b/compiler/rustc/Cargo.toml
+index 44cb0c8f3..6dcf01d0f 100644
+--- a/compiler/rustc/Cargo.toml
++++ b/compiler/rustc/Cargo.toml
+@@ -33,6 +33,8 @@ clippy_utils = { path = "../../src/tools/clippy/clippy_utils" }
+ declare_clippy_lint = { path = "../../src/tools/clippy/declare_clippy_lint" }
+ rustc_interface = { path = "../rustc_interface" }
+ rustc_session = { path = "../rustc_session" }
++# rustfmt, built in for the same reason. RUSTC_RUSTFMT=1 runs it (src/rustfmt.rs).
++rustfmt-nightly = { path = "../../src/tools/rustfmt", default-features = false }
+ 
+ 
+ [dependencies.tikv-jemalloc-sys]
+diff --git a/compiler/rustc/src/main.rs b/compiler/rustc/src/main.rs
+index a6feb726b..d8c8464a8 100644
+--- a/compiler/rustc/src/main.rs
++++ b/compiler/rustc/src/main.rs
+@@ -35,11 +35,17 @@
+ 
+ #[cfg(target_os = "wasi")]
+ mod clippy;
++#[cfg(target_os = "wasi")]
++mod rustfmt;
+ 
+ fn main() -> ExitCode {
+     #[cfg(target_os = "wasi")]
+     if std::env::var_os("RUSTC_CLIPPY").is_some() {
+         return clippy::main();
+     }
++    #[cfg(target_os = "wasi")]
++    if std::env::var_os("RUSTC_RUSTFMT").is_some() {
++        return rustfmt::main();
++    }
+     rustc_driver::main()
+ }
+diff --git a/compiler/rustc/src/rustfmt.rs b/compiler/rustc/src/rustfmt.rs
+new file mode 100644
+index 000000000..86ff37647
+--- /dev/null
++++ b/compiler/rustc/src/rustfmt.rs
+@@ -0,0 +1,61 @@
++//! rustfmt, built into rustc for hosts without dylibs (the playground's
++//! rustc.wasm), like Clippy (clippy.rs). With RUSTC_RUSTFMT set, rustc is
++//! `rustfmt [--edition EDITION] FILE...`: it formats the files in place, and
++//! the modules they declare, as rustfmt does. Formatting problems go to
++//! stderr; it fails if a file cannot be parsed or read.
++
++use std::path::PathBuf;
++use std::process::ExitCode;
++use std::str::FromStr;
++
++use rustfmt_nightly::{Config, Edition, EmitMode, FormatReportFormatterBuilder, Input, Session};
++
++pub fn main() -> ExitCode {
++    rustc_driver::install_ice_hook("https://github.com/rust-lang/rustfmt/issues/new", |_| ());
++    let mut edition = None;
++    let mut files = vec![];
++    let mut args = std::env::args().skip(1);
++    while let Some(arg) = args.next() {
++        let value = match arg.strip_prefix("--edition") {
++            Some("") => args.next(),
++            Some(rest) => rest.strip_prefix('=').map(str::to_owned),
++            None => {
++                files.push(PathBuf::from(arg));
++                continue;
++            }
++        };
++        match value.as_deref().map(Edition::from_str) {
++            Some(Ok(e)) => edition = Some(e),
++            _ => {
++                eprintln!("error: --edition takes 2015, 2018, 2021 or 2024");
++                return ExitCode::FAILURE;
++            }
++        }
++    }
++
++    // As rustfmt without a rustfmt.toml: the style edition follows the edition.
++    let mut config = Config::default_for_possible_style_edition(None, edition, None);
++    if let Some(edition) = edition {
++        config.set().edition(edition);
++    }
++    config.set().emit_mode(EmitMode::Files);
++    let mut out = std::io::stdout();
++    let mut session = Session::new(config, Some(&mut out));
++    for file in files {
++        match session.format(Input::File(file)) {
++            Ok(report) if report.has_warnings() => {
++                eprintln!("{}", FormatReportFormatterBuilder::new(&report).build());
++            }
++            Ok(_) => {}
++            Err(e) => {
++                eprintln!("error: {e}");
++                session.add_operational_error();
++            }
++        }
++    }
++    if session.has_operational_errors() || session.has_parsing_errors() {
++        ExitCode::FAILURE
++    } else {
++        ExitCode::SUCCESS
++    }
++}
+diff --git a/src/tools/rustfmt/Cargo.toml b/src/tools/rustfmt/Cargo.toml
+index bf1474284..76ccc04c0 100644
+--- a/src/tools/rustfmt/Cargo.toml
++++ b/src/tools/rustfmt/Cargo.toml
+@@ -60,6 +60,20 @@ unicode-properties = { version = "0.1", default-features = false, features = ["g
+ rustfmt-config_proc_macro = { version = "0.3", path = "config_proc_macro" }
+ semver = "1.0.21"
+ 
++# The compiler crates used through `extern crate`, as real dependencies, so
++# that the playground can build rustfmt into rustc itself.
++rustc_ast = { path = "../../../compiler/rustc_ast" }
++rustc_ast_pretty = { path = "../../../compiler/rustc_ast_pretty" }
++rustc_data_structures = { path = "../../../compiler/rustc_data_structures" }
++rustc_driver = { path = "../../../compiler/rustc_driver" }
++rustc_errors = { path = "../../../compiler/rustc_errors" }
++rustc_expand = { path = "../../../compiler/rustc_expand" }
++rustc_feature = { path = "../../../compiler/rustc_feature" }
++rustc_parse = { path = "../../../compiler/rustc_parse" }
++rustc_session = { path = "../../../compiler/rustc_session" }
++rustc_span = { path = "../../../compiler/rustc_span" }
++thin-vec = "0.2.21"
++
+ [dev-dependencies]
+ tempfile = "3.23.0"
+ insta = { version = "1.48.0", features = ["filters"] }
+diff --git a/src/tools/rustfmt/src/lib.rs b/src/tools/rustfmt/src/lib.rs
+index 285fa26d0..7a5b8e2ce 100644
+--- a/src/tools/rustfmt/src/lib.rs
++++ b/src/tools/rustfmt/src/lib.rs
+@@ -1,5 +1,9 @@
+ #![feature(rustc_private)]
+ #![deny(rust_2018_idioms)]
++// Built into the playground's rustc.wasm, rustfmt is built as a compiler
++// crate: the rustc crates below are also Cargo dependencies, and the
++// compiler's internal lints apply.
++#![allow(unused_extern_crates, rustc::symbol_intern_string_literal)]
+ #![warn(unreachable_pub)]
+ #![recursion_limit = "256"]
+ #![allow(clippy::match_like_matches_macro)]
+-- 
+2.39.5 (Apple Git-154)
+

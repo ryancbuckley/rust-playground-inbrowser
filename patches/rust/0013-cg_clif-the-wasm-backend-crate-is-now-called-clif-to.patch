@@ -1,0 +1,140 @@
+From 28ca282bc11dfaa905337b3a19aa544e57c5b0ae Mon Sep 17 00:00:00 2001
+From: Ryan Buckley <10402042+ryancbuckley@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 00:44:23 -0400
+Subject: [PATCH] cg_clif: the wasm backend crate is now called clif-to-wasm
+
+---
+ Cargo.lock                                    | 20 +++++++++----------
+ compiler/rustc_codegen_cranelift/Cargo.toml   |  4 ++--
+ .../rustc_codegen_cranelift/src/driver/aot.rs |  6 +++---
+ compiler/rustc_codegen_cranelift/src/wasm.rs  |  6 +++---
+ 4 files changed, 18 insertions(+), 18 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 1faa325ff..da87af36d 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -666,6 +666,15 @@ version = "1.1.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
+ 
++[[package]]
++name = "clif-to-wasm"
++version = "0.1.0"
++dependencies = [
++ "cranelift-codegen",
++ "cranelift-module",
++ "wasm-encoder 0.245.1",
++]
++
+ [[package]]
+ name = "clippy"
+ version = "0.1.101"
+@@ -1142,15 +1151,6 @@ version = "0.136.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b533db1679b4b728568bd490da6533cf50974c48a4d7534e78f1e0e02bc39769"
+ 
+-[[package]]
+-name = "cranelift-wasm-backend"
+-version = "0.1.0"
+-dependencies = [
+- "cranelift-codegen",
+- "cranelift-module",
+- "wasm-encoder 0.245.1",
+-]
+-
+ [[package]]
+ name = "crc32fast"
+ version = "1.5.0"
+@@ -4103,13 +4103,13 @@ dependencies = [
+ name = "rustc_codegen_cranelift"
+ version = "0.1.0"
+ dependencies = [
++ "clif-to-wasm",
+  "cranelift-codegen",
+  "cranelift-frontend",
+  "cranelift-jit",
+  "cranelift-module",
+  "cranelift-native",
+  "cranelift-object",
+- "cranelift-wasm-backend",
+  "gimli 0.33.0",
+  "indexmap",
+  "libloading",
+diff --git a/compiler/rustc_codegen_cranelift/Cargo.toml b/compiler/rustc_codegen_cranelift/Cargo.toml
+index 9e01bcc6d..029ccb2b5 100644
+--- a/compiler/rustc_codegen_cranelift/Cargo.toml
++++ b/compiler/rustc_codegen_cranelift/Cargo.toml
+@@ -23,7 +23,7 @@ object = { version = "0.40.0", default-features = false, features = ["std", "rea
+ indexmap = "2.0.0"
+ libloading = { version = "0.9.0", optional = true }
+ smallvec = "1.8.1"
+-cranelift-wasm-backend = { path = "../../../../../clif_to_wasm", features = ["module"] }
++clif-to-wasm = { path = "../../../../../clif_to_wasm", features = ["module"] }
+ 
+ # As a member of the rustc workspace, use the compiler crates directly.
+ rustc_abi = { path = "../rustc_abi" }
+@@ -62,7 +62,7 @@ rustc_target = { path = "../rustc_target" }
+ 
+ #gimli = { path = "../" }
+ 
+-# A compiler running on wasm only targets wasm, through cranelift-wasm-backend,
++# A compiler running on wasm only targets wasm, through clif-to-wasm,
+ # and needs none of Cranelift's native backends.
+ [target.'cfg(not(target_family = "wasm"))'.dependencies]
+ cranelift-codegen = { version = "0.136.2", default-features = false, features = ["all-native-arch"] }
+diff --git a/compiler/rustc_codegen_cranelift/src/driver/aot.rs b/compiler/rustc_codegen_cranelift/src/driver/aot.rs
+index a05066793..c01bcb9f1 100644
+--- a/compiler/rustc_codegen_cranelift/src/driver/aot.rs
++++ b/compiler/rustc_codegen_cranelift/src/driver/aot.rs
+@@ -34,10 +34,10 @@
+ use cranelift_module::DataId;
+ 
+ /// The object file a codegen unit is compiled into: a native one through
+-/// `cranelift-object`, or a wasm one through `cranelift-wasm-backend`.
++/// `cranelift-object`, or a wasm one through `clif-to-wasm`.
+ pub(crate) enum AotObject {
+     Native(UnwindModule<ObjectModule>),
+-    Wasm(cranelift_wasm_backend::object_module::WasmObjectModule),
++    Wasm(clif_to_wasm::object_module::WasmObjectModule),
+ }
+ 
+ macro_rules! with_module {
+@@ -381,7 +381,7 @@ fn compile_cgu(
+ 
+     if let AotObject::Wasm(m) = &aot_module.module {
+         for w in m.warnings() {
+-            dcx.warn(format!("cranelift-wasm-backend: {w} (the function traps when called)"));
++            dcx.warn(format!("clif-to-wasm: {w} (the function traps when called)"));
+         }
+     }
+ 
+diff --git a/compiler/rustc_codegen_cranelift/src/wasm.rs b/compiler/rustc_codegen_cranelift/src/wasm.rs
+index 03fde55e5..19eb9925e 100644
+--- a/compiler/rustc_codegen_cranelift/src/wasm.rs
++++ b/compiler/rustc_codegen_cranelift/src/wasm.rs
+@@ -1,10 +1,10 @@
+-//! Compiling for wasm targets through `cranelift-wasm-backend`, which turns
++//! Compiling for wasm targets through `clif-to-wasm`, which turns
+ //! the CLIF of each function into wasm and writes relocatable wasm objects
+ //! that `wasm-ld` or `wild` link with the (LLVM-compiled) sysroot.
+ 
+ use cranelift_codegen::isa::OwnedTargetIsa;
+ use cranelift_codegen::settings;
+-use cranelift_wasm_backend::object_module::{
++use clif_to_wasm::object_module::{
+     ObjectOptions, THREADS_FEATURES, WasmObjectModule, frontend_isa,
+ };
+ use rustc_session::Session;
+@@ -50,7 +50,7 @@ pub(crate) fn build_isa(sess: &Session, flags: settings::Flags) -> OwnedTargetIs
+ }
+ 
+ pub(crate) fn make_module(sess: &Session, isa: OwnedTargetIsa) -> WasmObjectModule {
+-    let mut config = cranelift_wasm_backend::Config::default();
++    let mut config = clif_to_wasm::Config::default();
+     config.module.memory64 = memory64(sess);
+     // The sysroot is compiled by LLVM: use its convention for multiple
+     // return values.
+-- 
+2.39.5 (Apple Git-154)
+

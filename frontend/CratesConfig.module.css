@@ -1,0 +1,14 @@
+.text {
+  margin: 0 0 0.5em;
+}
+
+.progress {
+  width: 100%;
+}
+
+.buttons {
+  display: flex;
+  gap: 0.5em;
+  margin: 0.25em 0;
+  font-size: var(--secondary-font-size);
+}

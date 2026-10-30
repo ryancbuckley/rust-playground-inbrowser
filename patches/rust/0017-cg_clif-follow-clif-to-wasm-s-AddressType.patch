@@ -1,0 +1,55 @@
+From 51dc771d0379a22c4ae1361fd3892fa022bfa54c Mon Sep 17 00:00:00 2001
+From: Ryan Buckley <10402042+ryancbuckley@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 15:35:35 -0400
+Subject: [PATCH] cg_clif: follow clif-to-wasm's AddressType
+
+clif-to-wasm replaced the memory64 bool in ModuleLayout and frontend_isa
+with an AddressType.
+---
+ compiler/rustc_codegen_cranelift/src/wasm.rs | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/compiler/rustc_codegen_cranelift/src/wasm.rs b/compiler/rustc_codegen_cranelift/src/wasm.rs
+index a9d8cb85f..9c03068f7 100644
+--- a/compiler/rustc_codegen_cranelift/src/wasm.rs
++++ b/compiler/rustc_codegen_cranelift/src/wasm.rs
+@@ -4,6 +4,7 @@
+ 
+ use cranelift_codegen::isa::OwnedTargetIsa;
+ use cranelift_codegen::settings;
++use clif_to_wasm::AddressType;
+ use clif_to_wasm::object_module::{
+     ObjectOptions, THREADS_FEATURES, WasmObjectModule, frontend_isa,
+ };
+@@ -17,8 +18,8 @@ pub(crate) fn is_wasm(sess: &Session) -> bool {
+     matches!(sess.target.arch, Arch::Wasm32 | Arch::Wasm64)
+ }
+ 
+-fn memory64(sess: &Session) -> bool {
+-    sess.target.arch == Arch::Wasm64
++fn address_type(sess: &Session) -> AddressType {
++    if sess.target.arch == Arch::Wasm64 { AddressType::I64 } else { AddressType::I32 }
+ }
+ 
+ /// The target features enabled by the target spec and `-Ctarget-feature`.
+@@ -48,7 +49,7 @@ pub(crate) fn threads(sess: &Session) -> bool {
+ }
+ 
+ pub(crate) fn build_isa(sess: &Session, flags: settings::Flags) -> OwnedTargetIsa {
+-    frontend_isa(flags, memory64(sess))
++    frontend_isa(flags, address_type(sess))
+         .unwrap_or_else(|err| sess.dcx().fatal(format!("failed to build TargetIsa: {err}")))
+ }
+ 
+@@ -71,7 +72,7 @@ fn wasm_import_names(tcx: TyCtxt<'_>) -> UnordMap<String, (String, String)> {
+ pub(crate) fn make_module(tcx: TyCtxt<'_>, isa: OwnedTargetIsa) -> WasmObjectModule {
+     let sess = tcx.sess;
+     let mut config = clif_to_wasm::Config::default();
+-    config.module.memory64 = memory64(sess);
++    config.module.address_type = address_type(sess);
+     // The sysroot is compiled by LLVM: use its convention for multiple
+     // return values.
+     config.module.demote_multi_results = true;
+-- 
+2.39.5 (Apple Git-154)
+

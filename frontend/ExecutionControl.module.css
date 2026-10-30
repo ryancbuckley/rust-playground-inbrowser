@@ -1,0 +1,14 @@
+.container {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.25em;
+}
+
+.note {
+  font-size: var(--secondary-font-size);
+}
+
+.buttons {
+  font-size: var(--secondary-font-size);
+}

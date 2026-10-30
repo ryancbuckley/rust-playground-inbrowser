@@ -1,0 +1,81 @@
+From c233c5aae3a423026988f9ec996152e9179485fe Mon Sep 17 00:00:00 2001
+From: Ryan Buckley <10402042+ryancbuckley@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 16:36:15 -0400
+Subject: [PATCH] Wasm imports from modules other than env
+
+Functions declared with #[link(wasm_import_module = "...")] (getrandom's
+random_get, for one) are imported from that module, under the field name
+rustc_codegen_llvm gives them, through clif-to-wasm's import_names.
+---
+ src/driver/aot.rs |  2 +-
+ src/wasm.rs       | 26 +++++++++++++++++++++++++-
+ 2 files changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/src/driver/aot.rs b/src/driver/aot.rs
+index c01bcb9f..46de570c 100644
+--- a/src/driver/aot.rs
++++ b/src/driver/aot.rs
+@@ -136,7 +136,7 @@ fn make_module(tcx: TyCtxt<'_>, cgu_name: &str) -> AotModule {
+         return AotModule {
+             producer: crate::debuginfo::producer(tcx.sess),
+             global_asm_config: GlobalAsmConfig::new(tcx.sess),
+-            module: AotObject::Wasm(crate::wasm::make_module(tcx.sess, isa)),
++            module: AotObject::Wasm(crate::wasm::make_module(tcx, isa)),
+             // No DWARF for wasm yet.
+             debug_context: None,
+             codegened_functions: vec![],
+diff --git a/src/wasm.rs b/src/wasm.rs
+index 19eb9925..a9d8cb85 100644
+--- a/src/wasm.rs
++++ b/src/wasm.rs
+@@ -7,7 +7,10 @@
+ use clif_to_wasm::object_module::{
+     ObjectOptions, THREADS_FEATURES, WasmObjectModule, frontend_isa,
+ };
++use rustc_data_structures::unord::{ExtendUnord, UnordMap};
++use rustc_middle::ty::{Instance, TyCtxt};
+ use rustc_session::Session;
++use rustc_span::def_id::LOCAL_CRATE;
+ use rustc_target::spec::Arch;
+ 
+ pub(crate) fn is_wasm(sess: &Session) -> bool {
+@@ -49,7 +52,24 @@ pub(crate) fn build_isa(sess: &Session, flags: settings::Flags) -> OwnedTargetIs
+         .unwrap_or_else(|err| sess.dcx().fatal(format!("failed to build TargetIsa: {err}")))
+ }
+ 
+-pub(crate) fn make_module(sess: &Session, isa: OwnedTargetIsa) -> WasmObjectModule {
++/// The functions imported with `#[link(wasm_import_module = "...")]`: for
++/// each (mangled) symbol name, the wasm module and field it is imported as,
++/// named as rustc_codegen_llvm names them.
++fn wasm_import_names(tcx: TyCtxt<'_>) -> UnordMap<String, (String, String)> {
++    let mut names = UnordMap::default();
++    for &cnum in tcx.crates(()).iter().chain([&LOCAL_CRATE]) {
++        names.extend_unord(tcx.wasm_import_module_map(cnum).items().map(|(&def_id, module)| {
++            let symbol = tcx.symbol_name(Instance::mono(tcx, def_id)).name.to_owned();
++            let field =
++                tcx.codegen_fn_attrs(def_id).symbol_name.unwrap_or_else(|| tcx.item_name(def_id));
++            (symbol, (module.clone(), field.to_string()))
++        }));
++    }
++    names
++}
++
++pub(crate) fn make_module(tcx: TyCtxt<'_>, isa: OwnedTargetIsa) -> WasmObjectModule {
++    let sess = tcx.sess;
+     let mut config = clif_to_wasm::Config::default();
+     config.module.memory64 = memory64(sess);
+     // The sysroot is compiled by LLVM: use its convention for multiple
+@@ -75,6 +95,10 @@ pub(crate) fn make_module(sess: &Session, isa: OwnedTargetIsa) -> WasmObjectModu
+             // when called, with a warning at compile time.
+             stub_unsupported: std::env::var("CG_CLIF_WASM_STRICT").as_deref() != Ok("1"),
+             libcall_names: cranelift_module::default_libcall_names(),
++            import_names: {
++                let names = wasm_import_names(tcx);
++                Box::new(move |symbol| names.get(symbol).cloned())
++            },
+         },
+     )
+ }
+-- 
+2.39.5 (Apple Git-154)
+

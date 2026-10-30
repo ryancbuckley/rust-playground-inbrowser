@@ -1,0 +1,55 @@
+From 1c5517a4a5bcb468b7807b65a2c1e06bfa4e9486 Mon Sep 17 00:00:00 2001
+From: Ryan Buckley <10402042+ryancbuckley@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 17:32:52 -0400
+Subject: [PATCH] Exit on fatal errors without unwinding; no native Cranelift
+ ISAs in a wasm-hosted cg_clif
+
+---
+ compiler/rustc_codegen_cranelift/Cargo.toml | 7 ++++++-
+ compiler/rustc_span/src/fatal_error.rs      | 5 +++++
+ 2 files changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/compiler/rustc_codegen_cranelift/Cargo.toml b/compiler/rustc_codegen_cranelift/Cargo.toml
+index 5300dbd40..9e01bcc6d 100644
+--- a/compiler/rustc_codegen_cranelift/Cargo.toml
++++ b/compiler/rustc_codegen_cranelift/Cargo.toml
+@@ -10,7 +10,7 @@ crate-type = ["lib", "dylib"]
+ 
+ [dependencies]
+ # These have to be in sync with each other
+-cranelift-codegen = { version = "0.136.2", default-features = false, features = ["std", "timing", "unwind", "all-native-arch"] }
++cranelift-codegen = { version = "0.136.2", default-features = false, features = ["std", "timing", "unwind"] }
+ cranelift-frontend = { version = "0.136.2" }
+ cranelift-module = { version = "0.136.2" }
+ cranelift-native = { version = "0.136.2" }
+@@ -62,6 +62,11 @@ rustc_target = { path = "../rustc_target" }
+ 
+ #gimli = { path = "../" }
+ 
++# A compiler running on wasm only targets wasm, through cranelift-wasm-backend,
++# and needs none of Cranelift's native backends.
++[target.'cfg(not(target_family = "wasm"))'.dependencies]
++cranelift-codegen = { version = "0.136.2", default-features = false, features = ["all-native-arch"] }
++
+ [features]
+ # Enable features not ready to be enabled when compiling as part of rustc
+ unstable-features = ["jit", "inline_asm_sym"]
+diff --git a/compiler/rustc_span/src/fatal_error.rs b/compiler/rustc_span/src/fatal_error.rs
+index 5e2d82681..b593b7dca 100644
+--- a/compiler/rustc_span/src/fatal_error.rs
++++ b/compiler/rustc_span/src/fatal_error.rs
+@@ -13,6 +13,11 @@ impl !Send for FatalError {}
+ 
+ impl FatalError {
+     pub fn raise(self) -> ! {
++        // Without unwinding (such as rustc on wasm) nothing could catch the
++        // marker; the diagnostics are out, so exit like the driver would.
++        #[cfg(panic = "abort")]
++        std::process::exit(1);
++        #[cfg(not(panic = "abort"))]
+         std::panic::resume_unwind(Box::new(FatalErrorMarker))
+     }
+ }
+-- 
+2.39.5 (Apple Git-154)
+

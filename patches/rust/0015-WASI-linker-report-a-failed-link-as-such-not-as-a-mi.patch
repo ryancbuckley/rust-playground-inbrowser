@@ -1,0 +1,49 @@
+From 488a1fd75b2c371806bb943ed75f595ede504fcb Mon Sep 17 00:00:00 2001
+From: Ryan Buckley <10402042+ryancbuckley@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 16:36:15 -0400
+Subject: [PATCH] WASI linker: report a failed link as such, not as a missing
+ linker
+
+---
+ compiler/rustc_codegen_ssa/src/back/link.rs | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/compiler/rustc_codegen_ssa/src/back/link.rs b/compiler/rustc_codegen_ssa/src/back/link.rs
+index 637f09471..69459fb99 100644
+--- a/compiler/rustc_codegen_ssa/src/back/link.rs
++++ b/compiler/rustc_codegen_ssa/src/back/link.rs
+@@ -2107,7 +2107,7 @@ fn get_object_file_path(sess: &Session, name: &str, self_contained: bool) -> Pat
+ /// `argv` to completion on the same filesystem and output streams, and
+ /// returns its exit code (or -1 if it cannot run it).
+ #[cfg(target_os = "wasi")]
+-fn exec_linker_wasi(cmd: &Command) -> io::Result<Output> {
++fn exec_linker_wasi(sess: &Session, cmd: &Command) -> io::Result<Output> {
+     use std::ffi::{CString, c_char};
+ 
+     #[link(wasm_import_module = "playground")]
+@@ -2124,7 +2124,12 @@ fn exec_linker_wasi(cmd: &Command) -> io::Result<Output> {
+     match unsafe { spawn(ptrs.as_ptr(), ptrs.len()) } {
+         0 => Ok(Output { status: Default::default(), stdout: vec![], stderr: vec![] }),
+         -1 => Err(io::Error::new(io::ErrorKind::NotFound, "the host cannot run the linker")),
+-        code => Err(io::Error::other(format!("the linker exited with status {code}"))),
++        // `ExitStatus` cannot say "failed" on WASI. The linker has printed
++        // its errors to our stderr.
++        code => sess.dcx().fatal(format!(
++            "linking with `{}` failed: exit status {code}",
++            cmd.get_program().display()
++        )),
+     }
+ }
+ 
+@@ -2137,7 +2142,7 @@ fn exec_linker(
+ ) -> io::Result<Output> {
+     // WASI cannot spawn processes, but a host may offer to run the linker.
+     #[cfg(target_os = "wasi")]
+-    return exec_linker_wasi(cmd);
++    return exec_linker_wasi(sess, cmd);
+ 
+     // When attempting to spawn the linker we run a risk of blowing out the
+     // size limits for spawning a new process with respect to the arguments
+-- 
+2.39.5 (Apple Git-154)
+

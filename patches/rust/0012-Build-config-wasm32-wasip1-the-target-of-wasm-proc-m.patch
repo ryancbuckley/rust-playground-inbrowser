@@ -1,0 +1,23 @@
+From c016422d5e6ec390271b290656f0e0c8a1a8e1f7 Mon Sep 17 00:00:00 2001
+From: Ryan Buckley <10402042+ryancbuckley@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 00:19:06 -0400
+Subject: [PATCH] Build config: wasm32-wasip1, the target of wasm proc macros
+
+---
+ bootstrap.toml | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/bootstrap.toml b/bootstrap.toml
+index 00f5f33c2..055610eef 100644
+--- a/bootstrap.toml
++++ b/bootstrap.toml
+@@ -36,3 +36,6 @@ cc = "/path/to/browser_rust_playground/tools/wasi-sdk-34.0-arm64-macos/bin/clang
+ cxx = "/path/to/browser_rust_playground/tools/wasi-sdk-34.0-arm64-macos/bin/clang++"
+ ar = "/path/to/browser_rust_playground/tools/wasi-sdk-34.0-arm64-macos/bin/llvm-ar"
+ codegen-backends = ["cranelift"]
++# Wasm proc macros (-Zwasm-proc-macros) are built for wasm32-wasip1.
++[target.wasm32-wasip1]
++wasi-root = "/path/to/browser_rust_playground/tools/wasi-sdk-34.0-arm64-macos/share/wasi-sysroot"
+-- 
+2.39.5 (Apple Git-154)
+

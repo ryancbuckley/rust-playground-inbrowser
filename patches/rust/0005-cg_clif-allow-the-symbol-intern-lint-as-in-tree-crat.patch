@@ -1,0 +1,24 @@
+From 40649123834799c18b3fd84f4a48b13b2f8b9629 Mon Sep 17 00:00:00 2001
+From: Ryan Buckley <10402042+ryancbuckley@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 17:20:10 -0400
+Subject: [PATCH] cg_clif: allow the symbol-intern lint as in-tree crate
+
+---
+ compiler/rustc_codegen_cranelift/src/lib.rs | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/compiler/rustc_codegen_cranelift/src/lib.rs b/compiler/rustc_codegen_cranelift/src/lib.rs
+index ba2f3706a..bdb0b4e7f 100644
+--- a/compiler/rustc_codegen_cranelift/src/lib.rs
++++ b/compiler/rustc_codegen_cranelift/src/lib.rs
+@@ -162,6 +162,7 @@ fn init(&mut self, sess: &EarlySession) -> CodegenBackendInit {
+     fn target_config(&self, sess: &EarlySession) -> TargetConfig {
+         // FIXME return the actually used target features. this is necessary for #[cfg(target_feature)]
+         let target_features = match sess.target.arch {
++            #[allow(rustc::symbol_intern_string_literal)]
+             Arch::X86_64 if sess.target.os != Os::None => {
+                 // x86_64 mandates SSE2 support and rustc requires the x87 feature to be enabled
+                 vec![sym::fxsr, sym::sse, sym::sse2, Symbol::intern("x87")]
+-- 
+2.39.5 (Apple Git-154)
+

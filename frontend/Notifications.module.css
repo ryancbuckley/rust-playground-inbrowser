@@ -1,0 +1,49 @@
+.container {
+  --buffer: 0.5em;
+  --space: calc(var(--buffer) / 2);
+  --border-color: #428bca;
+
+  position: absolute;
+  right: var(--buffer);
+  bottom: var(--buffer);
+  left: var(--buffer);
+  z-index: 10;
+  margin-right: auto;
+  margin-left: auto;
+  border: 2px solid var(--border-color);
+  background: var(--background-color);
+  padding: 0;
+  max-width: 50em;
+  color: inherit;
+}
+
+.notification {
+  display: flow-root;
+
+  &:not(:last-child) {
+    border-bottom: 1px solid var(--border-color);
+  }
+}
+
+.notificationContent {
+  padding: var(--space);
+  width: 100%;
+}
+
+.close {
+  composes: -buttonReset from './shared.module.css';
+  float: right;
+  cursor: pointer;
+  padding: var(--space);
+}
+
+.action {
+  display: flex;
+  justify-content: center;
+  gap: 0.5em;
+  padding-top: 0.5em;
+
+  & button {
+    cursor: pointer;
+  }
+}

@@ -1,0 +1,335 @@
+From f26c48d3f2e32a0db28e55a4aaa00edbb704e588 Mon Sep 17 00:00:00 2001
+From: Ryan Buckley <10402042+ryancbuckley@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 15:59:11 -0400
+Subject: [PATCH] Clippy built into rustc for WASI hosts (RUSTC_CLIPPY=1)
+
+Without dylibs, a separate clippy-driver would be a second copy of the whole
+compiler. On WASI, rustc links Clippy's lints instead, and registers them
+the way clippy-driver does when RUSTC_CLIPPY is set (compiler/rustc/src/
+clippy.rs). Clippy's crates get Cargo dependencies on the compiler crates
+they use through extern crate, so that they build with the compiler.
+---
+ Cargo.lock                                    | 59 +++++++++++++++++++
+ compiler/rustc/Cargo.toml                     |  8 +++
+ compiler/rustc/src/clippy.rs                  | 54 +++++++++++++++++
+ compiler/rustc/src/main.rs                    |  7 +++
+ src/tools/clippy/clippy_config/Cargo.toml     | 11 ++++
+ src/tools/clippy/clippy_lints/Cargo.toml      | 25 ++++++++
+ src/tools/clippy/clippy_utils/Cargo.toml      | 23 ++++++++
+ .../clippy/declare_clippy_lint/Cargo.toml     |  5 ++
+ 8 files changed, 192 insertions(+)
+ create mode 100644 compiler/rustc/src/clippy.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index da87af36d..327e1488d 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -723,6 +723,14 @@ dependencies = [
+  "arrayvec",
+  "clippy_utils",
+  "itertools",
++ "rustc_attr_ir",
++ "rustc_attr_parsing",
++ "rustc_data_structures",
++ "rustc_errors",
++ "rustc_hir",
++ "rustc_middle",
++ "rustc_session",
++ "rustc_span",
+  "toml 1.1.0+spec-1.1.0",
+  "walkdir",
+ ]
+@@ -740,6 +748,28 @@ dependencies = [
+  "memchr",
+  "quine-mc_cluskey",
+  "regex-syntax",
++ "rustc_abi",
++ "rustc_arena",
++ "rustc_ast",
++ "rustc_ast_pretty",
++ "rustc_attr_ir",
++ "rustc_data_structures",
++ "rustc_errors",
++ "rustc_hir",
++ "rustc_hir_analysis",
++ "rustc_hir_pretty",
++ "rustc_hir_typeck",
++ "rustc_index",
++ "rustc_infer",
++ "rustc_lexer",
++ "rustc_lint",
++ "rustc_middle",
++ "rustc_parse_format",
++ "rustc_resolve",
++ "rustc_span",
++ "rustc_structures",
++ "rustc_target",
++ "rustc_trait_selection",
+  "semver",
+  "serde",
+  "toml 1.1.0+spec-1.1.0",
+@@ -763,7 +793,27 @@ version = "0.1.101"
+ dependencies = [
+  "arrayvec",
+  "itertools",
++ "rustc_abi",
+  "rustc_apfloat",
++ "rustc_ast",
++ "rustc_attr_ir",
++ "rustc_attr_parsing",
++ "rustc_const_eval",
++ "rustc_data_structures",
++ "rustc_driver",
++ "rustc_errors",
++ "rustc_hir",
++ "rustc_hir_analysis",
++ "rustc_hir_typeck",
++ "rustc_index",
++ "rustc_infer",
++ "rustc_lexer",
++ "rustc_lint",
++ "rustc_middle",
++ "rustc_mir_dataflow",
++ "rustc_session",
++ "rustc_span",
++ "rustc_trait_selection",
+ ]
+ 
+ [[package]]
+@@ -1360,6 +1410,9 @@ checksum = "a0afaad2b26fa326569eb264b1363e8ae3357618c43982b3f285f0774ce76b69"
+ [[package]]
+ name = "declare_clippy_lint"
+ version = "0.1.101"
++dependencies = [
++ "rustc_lint",
++]
+ 
+ [[package]]
+ name = "derive-where"
+@@ -3848,12 +3901,18 @@ checksum = "bfe6f213fb658c8fb95baabd5420393438cf5a98d707f5dd701d9197c705f71e"
+ name = "rustc-main"
+ version = "0.0.0"
+ dependencies = [
++ "clippy_config",
++ "clippy_lints",
++ "clippy_utils",
++ "declare_clippy_lint",
+  "getrandom 0.3.3",
+  "rustc_codegen_ssa",
+  "rustc_driver",
+  "rustc_driver_impl",
++ "rustc_interface",
+  "rustc_public",
+  "rustc_public_bridge",
++ "rustc_session",
+  "rustc_windows_rc",
+  "tikv-jemalloc-sys",
+  "wasi 0.14.2+wasi-0.2.4",
+diff --git a/compiler/rustc/Cargo.toml b/compiler/rustc/Cargo.toml
+index 4b43c88cb..44cb0c8f3 100644
+--- a/compiler/rustc/Cargo.toml
++++ b/compiler/rustc/Cargo.toml
+@@ -25,6 +25,14 @@ rustc_public_bridge = { path = "../rustc_public_bridge" }
+ [target.'cfg(target_os = "wasi")'.dependencies]
+ getrandom = "=0.3.3"
+ wasi = "=0.14.2"
++# Clippy's lints, built in: there are no dylibs to share the compiler with a
++# separate clippy-driver. RUSTC_CLIPPY=1 turns them on (src/clippy.rs).
++clippy_config = { path = "../../src/tools/clippy/clippy_config" }
++clippy_lints = { path = "../../src/tools/clippy/clippy_lints" }
++clippy_utils = { path = "../../src/tools/clippy/clippy_utils" }
++declare_clippy_lint = { path = "../../src/tools/clippy/declare_clippy_lint" }
++rustc_interface = { path = "../rustc_interface" }
++rustc_session = { path = "../rustc_session" }
+ 
+ 
+ [dependencies.tikv-jemalloc-sys]
+diff --git a/compiler/rustc/src/clippy.rs b/compiler/rustc/src/clippy.rs
+new file mode 100644
+index 000000000..1489f1502
+--- /dev/null
++++ b/compiler/rustc/src/clippy.rs
+@@ -0,0 +1,54 @@
++//! Clippy, built into rustc for hosts without dylibs (the playground's
++//! rustc.wasm), where a separate clippy-driver would be a second copy of the
++//! whole compiler. With RUSTC_CLIPPY set, rustc registers Clippy's lints the
++//! way clippy-driver does (src/tools/clippy/src/driver.rs).
++
++extern crate rustc_driver;
++extern crate rustc_interface;
++extern crate rustc_session;
++
++use std::process::ExitCode;
++
++use clippy_utils::sym;
++use declare_clippy_lint::LintListBuilder;
++use rustc_interface::interface;
++use rustc_session::EarlyDiagCtxt;
++use rustc_session::config::ErrorOutputType;
++
++struct ClippyCallbacks;
++
++impl rustc_driver::Callbacks for ClippyCallbacks {
++    #[allow(rustc::bad_opt_access)]
++    fn config(&mut self, config: &mut interface::Config) {
++        let previous = config.register_lints.take();
++        config.register_lints = Some(Box::new(move |sess, lint_store| {
++            if let Some(previous) = &previous {
++                (previous)(sess, lint_store);
++            }
++            let mut list_builder = LintListBuilder::default();
++            list_builder.insert(clippy_lints::declared_lints::LINTS);
++            list_builder.register(lint_store);
++            let conf = clippy_config::Conf::load(sess);
++            clippy_lints::register_lint_passes(lint_store, conf);
++        }));
++        config.extra_symbols = sym::EXTRA_SYMBOLS.into();
++        // As clippy-driver: MIR lints need unoptimized MIR, and HIR that
++        // matches the source for format_args!.
++        config.opts.unstable_opts.mir_opt_level = Some(0);
++        config.opts.unstable_opts.mir_enable_passes =
++            vec![("CheckNull".to_owned(), false), ("CheckAlignment".to_owned(), false)];
++        config.opts.unstable_opts.flatten_format_args = false;
++    }
++}
++
++pub fn main() -> ExitCode {
++    let early_dcx = EarlyDiagCtxt::new(ErrorOutputType::default());
++    rustc_driver::init_rustc_env_logger(&early_dcx);
++    rustc_driver::install_ice_hook("https://github.com/rust-lang/rust-clippy/issues/new", |_| ());
++    rustc_driver::catch_with_exit_code(move || {
++        let mut args = rustc_driver::args::raw_args(&early_dcx);
++        args.extend(["--cfg".to_string(), "clippy".to_string()]);
++        rustc_driver::compiler_entrypoint(&args, &mut ClippyCallbacks);
++        ExitCode::SUCCESS
++    })
++}
+diff --git a/compiler/rustc/src/main.rs b/compiler/rustc/src/main.rs
+index 6609a19fa..a6feb726b 100644
+--- a/compiler/rustc/src/main.rs
++++ b/compiler/rustc/src/main.rs
+@@ -33,6 +33,13 @@
+ // for an example of how to do so.
+ rustc_driver::override_c_allocator_in_binary!();
+ 
++#[cfg(target_os = "wasi")]
++mod clippy;
++
+ fn main() -> ExitCode {
++    #[cfg(target_os = "wasi")]
++    if std::env::var_os("RUSTC_CLIPPY").is_some() {
++        return clippy::main();
++    }
+     rustc_driver::main()
+ }
+diff --git a/src/tools/clippy/clippy_config/Cargo.toml b/src/tools/clippy/clippy_config/Cargo.toml
+index 1ef5e94a8..cc023f2d0 100644
+--- a/src/tools/clippy/clippy_config/Cargo.toml
++++ b/src/tools/clippy/clippy_config/Cargo.toml
+@@ -11,6 +11,17 @@ arrayvec = { version = "0.7", default-features = false }
+ clippy_utils = { path = "../clippy_utils" }
+ itertools = "0.15"
+ 
++# The compiler crates used through `extern crate`, as real dependencies, so
++# that the playground can build these into rustc itself.
++rustc_attr_ir = { path = "../../../../compiler/rustc_attr_ir" }
++rustc_attr_parsing = { path = "../../../../compiler/rustc_attr_parsing" }
++rustc_data_structures = { path = "../../../../compiler/rustc_data_structures" }
++rustc_errors = { path = "../../../../compiler/rustc_errors" }
++rustc_hir = { path = "../../../../compiler/rustc_hir" }
++rustc_middle = { path = "../../../../compiler/rustc_middle" }
++rustc_session = { path = "../../../../compiler/rustc_session" }
++rustc_span = { path = "../../../../compiler/rustc_span" }
++
+ [dependencies.toml]
+ version = "1.1"
+ default-features = false
+diff --git a/src/tools/clippy/clippy_lints/Cargo.toml b/src/tools/clippy/clippy_lints/Cargo.toml
+index a8c8e02d8..b88a09149 100644
+--- a/src/tools/clippy/clippy_lints/Cargo.toml
++++ b/src/tools/clippy/clippy_lints/Cargo.toml
+@@ -23,6 +23,31 @@ unicode-script = { version = "0.5", default-features = false }
+ semver = "1.0"
+ url = "2.2"
+ 
++# The compiler crates used through `extern crate`, as real dependencies, so
++# that the playground can build these into rustc itself.
++rustc_abi = { path = "../../../../compiler/rustc_abi" }
++rustc_arena = { path = "../../../../compiler/rustc_arena" }
++rustc_ast = { path = "../../../../compiler/rustc_ast" }
++rustc_ast_pretty = { path = "../../../../compiler/rustc_ast_pretty" }
++rustc_attr_ir = { path = "../../../../compiler/rustc_attr_ir" }
++rustc_data_structures = { path = "../../../../compiler/rustc_data_structures" }
++rustc_errors = { path = "../../../../compiler/rustc_errors" }
++rustc_hir = { path = "../../../../compiler/rustc_hir" }
++rustc_hir_analysis = { path = "../../../../compiler/rustc_hir_analysis" }
++rustc_hir_pretty = { path = "../../../../compiler/rustc_hir_pretty" }
++rustc_hir_typeck = { path = "../../../../compiler/rustc_hir_typeck" }
++rustc_index = { path = "../../../../compiler/rustc_index" }
++rustc_infer = { path = "../../../../compiler/rustc_infer" }
++rustc_lexer = { path = "../../../../compiler/rustc_lexer" }
++rustc_lint = { path = "../../../../compiler/rustc_lint" }
++rustc_middle = { path = "../../../../compiler/rustc_middle" }
++rustc_parse_format = { path = "../../../../compiler/rustc_parse_format" }
++rustc_resolve = { path = "../../../../compiler/rustc_resolve" }
++rustc_span = { path = "../../../../compiler/rustc_span" }
++rustc_structures = { path = "../../../../compiler/rustc_structures" }
++rustc_target = { path = "../../../../compiler/rustc_target" }
++rustc_trait_selection = { path = "../../../../compiler/rustc_trait_selection" }
++
+ [dependencies.toml]
+ version = "1.1"
+ default-features = false
+diff --git a/src/tools/clippy/clippy_utils/Cargo.toml b/src/tools/clippy/clippy_utils/Cargo.toml
+index 047ae707e..7673baaa5 100644
+--- a/src/tools/clippy/clippy_utils/Cargo.toml
++++ b/src/tools/clippy/clippy_utils/Cargo.toml
+@@ -14,6 +14,29 @@ itertools = "0.15"
+ # FIXME(f16_f128): remove when no longer needed for parsing
+ rustc_apfloat = "0.2.0"
+ 
++# The compiler crates used through `extern crate`, as real dependencies, so
++# that the playground can build these into rustc itself.
++rustc_abi = { path = "../../../../compiler/rustc_abi" }
++rustc_ast = { path = "../../../../compiler/rustc_ast" }
++rustc_attr_ir = { path = "../../../../compiler/rustc_attr_ir" }
++rustc_attr_parsing = { path = "../../../../compiler/rustc_attr_parsing" }
++rustc_const_eval = { path = "../../../../compiler/rustc_const_eval" }
++rustc_data_structures = { path = "../../../../compiler/rustc_data_structures" }
++rustc_driver = { path = "../../../../compiler/rustc_driver" }
++rustc_errors = { path = "../../../../compiler/rustc_errors" }
++rustc_hir = { path = "../../../../compiler/rustc_hir" }
++rustc_hir_analysis = { path = "../../../../compiler/rustc_hir_analysis" }
++rustc_hir_typeck = { path = "../../../../compiler/rustc_hir_typeck" }
++rustc_index = { path = "../../../../compiler/rustc_index" }
++rustc_infer = { path = "../../../../compiler/rustc_infer" }
++rustc_lexer = { path = "../../../../compiler/rustc_lexer" }
++rustc_lint = { path = "../../../../compiler/rustc_lint" }
++rustc_middle = { path = "../../../../compiler/rustc_middle" }
++rustc_mir_dataflow = { path = "../../../../compiler/rustc_mir_dataflow" }
++rustc_session = { path = "../../../../compiler/rustc_session" }
++rustc_span = { path = "../../../../compiler/rustc_span" }
++rustc_trait_selection = { path = "../../../../compiler/rustc_trait_selection" }
++
+ [lints.rust.unexpected_cfgs]
+ level = "warn"
+ check-cfg = ['cfg(bootstrap)']
+diff --git a/src/tools/clippy/declare_clippy_lint/Cargo.toml b/src/tools/clippy/declare_clippy_lint/Cargo.toml
+index c30452671..675630e71 100644
+--- a/src/tools/clippy/declare_clippy_lint/Cargo.toml
++++ b/src/tools/clippy/declare_clippy_lint/Cargo.toml
+@@ -5,6 +5,11 @@ edition = "2024"
+ repository = "https://github.com/rust-lang/rust-clippy"
+ license = "MIT OR Apache-2.0"
+ 
++[dependencies]
++# The compiler crates used through `extern crate`, as real dependencies, so
++# that the playground can build these into rustc itself.
++rustc_lint = { path = "../../../../compiler/rustc_lint" }
++
+ [package.metadata.rust-analyzer]
+ # This crate uses #[feature(rustc_private)]
+ rustc_private = true
+-- 
+2.39.5 (Apple Git-154)
+

@@ -1,0 +1,14 @@
+# Third-party checkouts and downloaded tools (see scripts/ for how to get them)
+/vendor/
+/tools/wasmtime
+/tools/wasm-tools
+/tools/wat2wasm
+/tools/dl-*/
+/tools/wasi-sdk-*/
+# Build outputs
+/build/
+/web/dist/
+# The page, built from frontend/ (scripts/build-web.sh)
+/web/index.html
+*.log
+/crates/target/

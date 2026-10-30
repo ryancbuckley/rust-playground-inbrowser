@@ -1,0 +1,800 @@
+From bd0ece6f29a48d6accad0e09796d9e578c505978 Mon Sep 17 00:00:00 2001
+From: bjorn3 <17426603+bjorn3@users.noreply.github.com>
+Date: Thu, 25 Jan 2024 20:48:49 +0000
+Subject: [PATCH] [WIP] Support compiling rustc to WebAssembly
+
+---
+ .gitignore                                    |   5 +
+ Cargo.toml                                    |   1 -
+ bootstrap.toml                                |  38 +++++
+ comment.txt                                   |  18 +++
+ compiler/rustc/Cargo.toml                     |   1 +
+ compiler/rustc_codegen_cranelift/Cargo.toml   |  39 +++--
+ compiler/rustc_codegen_cranelift/src/base.rs  |   2 +-
+ .../rustc_codegen_cranelift/src/driver/aot.rs | 141 +++++++++++++++++-
+ compiler/rustc_codegen_cranelift/src/lib.rs   |  16 +-
+ .../rustc_codegen_cranelift/src/main_shim.rs  |  22 ++-
+ compiler/rustc_codegen_cranelift/src/wasm.rs  |  80 ++++++++++
+ compiler/rustc_codegen_ssa/src/back/linker.rs |   4 +-
+ compiler/rustc_driver/Cargo.toml              |   2 +-
+ compiler/rustc_driver_impl/Cargo.toml         |   1 +
+ compiler/rustc_driver_impl/src/lib.rs         |   2 +-
+ compiler/rustc_interface/Cargo.toml           |   2 +
+ compiler/rustc_interface/src/util.rs          |   2 +
+ compiler/rustc_session/src/filesearch.rs      |   5 +
+ compiler/rustc_session/src/output.rs          |   4 +
+ .../src/spec/targets/wasm32_wasip1.rs         |   2 +-
+ .../src/spec/targets/wasm32_wasip1_threads.rs |   2 +-
+ src/bootstrap/src/core/build_steps/compile.rs |   9 +-
+ src/bootstrap/src/core/session.rs             |   9 ++
+ 23 files changed, 371 insertions(+), 36 deletions(-)
+ create mode 100644 bootstrap.toml
+ create mode 100644 comment.txt
+ create mode 100644 compiler/rustc_codegen_cranelift/src/wasm.rs
+
+diff --git a/.gitignore b/.gitignore
+index 04e87ca10..a92bede25 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -105,3 +105,8 @@ flake.lock
+ /default.nix
+ 
+ # Before adding new lines, see the comment at the top.
++
++/wasi-sdk-*
++/wabt-*
++/tmp
++/rust_out
+diff --git a/Cargo.toml b/Cargo.toml
+index 63d96ff2a..e51c884cd 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -52,7 +52,6 @@ members = [
+ 
+ exclude = [
+   "build",
+-  "compiler/rustc_codegen_cranelift",
+   "compiler/rustc_codegen_gcc",
+   "src/bootstrap",
+   "tests/rustdoc-gui",
+diff --git a/bootstrap.toml b/bootstrap.toml
+new file mode 100644
+index 000000000..58061acfa
+--- /dev/null
++++ b/bootstrap.toml
+@@ -0,0 +1,38 @@
++# Includes one of the default files in src/bootstrap/defaults
++profile = "compiler"
++change-id = 9999999
++
++[llvm]
++download-ci-llvm = true
++
++[rust]
++codegen-backends = ["llvm"]
++deny-warnings = false
++llvm-tools = false
++llvm-bitcode-linker = false
++debug = false
++debuginfo-level = 0
++
++[build]
++docs = false
++extended = false
++tools = []
++host = ["wasm32-wasip1"]
++target = ["x86_64-unknown-linux-gnu"]
++
++[install]
++prefix = "dist"
++sysconfdir = "etc"
++
++[target.'wasm32-wasip1']
++wasi-root = "wasi-sdk-32.0-x86_64-linux/share/wasi-sysroot"
++linker = "wasi-sdk-32.0-x86_64-linux/bin/clang"
++codegen-backends = ["cranelift"]
++
++[target.'wasm32-wasip1-threads']
++wasi-root = "wasi-sdk-32.0-x86_64-linux/share/wasi-sysroot"
++linker = "wasi-sdk-32.0-x86_64-linux/bin/clang"
++codegen-backends = ["cranelift"]
++
++[target.'x86_64-unknown-linux-gnu']
++cc = "gcc"
+diff --git a/comment.txt b/comment.txt
+new file mode 100644
+index 000000000..547c4c220
+--- /dev/null
++++ b/comment.txt
+@@ -0,0 +1,18 @@
++Got a new version up. This time all logic to handle using different codegen backends for the different stages, so you don't need to do a multi stage process.
++
++* Make sure you are running on Linux.
++* Clone https://github.com/bjorn3/rust
++* Checkout the `compile_rustc_for_wasm20` branch
++* Download and extract https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-32.0-x86_64-linux.tar.gz into the rust checkout.
++* Run `WASI_SDK_PATH=$(pwd)/wasi-sdk-32.0-x86_64-linux ./x.py install` to build the compiler and install it into the dist dir.
++* Use `wasmtime run --dir tmp::/ --dir dist dist/bin/rustc.wasm --sysroot dist --target x86_64-unknown-linux-gnu` to run rustc.
++
++Note that linking is not supported as wasi doesn't allow spawning executables. You can use something like the following to compile using the wasm32-wasi rustc and then link using native gcc:
++
++```
++$ mkdir tmp
++$ echo 'fn main() { println!("Hello World!"); }' | wasmtime run -Sthreads=y -Spreview2=n --dir tmp::/ --dir dist --env RUST_MIN_STACK=16777216 dist/bin/rustc.wasm - --sysroot dist --target x86_64-unknown-linux-gnu -Csave-temps
++$ gcc -fuse-ld=lld tmp/rustc*/symbols.o tmp/rust_out.* dist/lib/rustlib/x86_64-unknown-linux-gnu/lib/lib*.rlib -o rust_out
++$ ./rust_out
++Hello World!
++```
+diff --git a/compiler/rustc/Cargo.toml b/compiler/rustc/Cargo.toml
+index 19a9a7913..4b43c88cb 100644
+--- a/compiler/rustc/Cargo.toml
++++ b/compiler/rustc/Cargo.toml
+@@ -35,6 +35,7 @@ features = ['override_allocator_on_supported_platforms']
+ [features]
+ # tidy-alphabetical-start
+ check_only = ['rustc_driver_impl/check_only']
++cranelift = ['rustc_driver_impl/cranelift']
+ jemalloc = ['dep:tikv-jemalloc-sys', 'rustc_driver_impl/jemalloc']
+ llvm = ['rustc_driver_impl/llvm']
+ llvm_offload = ['rustc_driver_impl/llvm_offload']
+diff --git a/compiler/rustc_codegen_cranelift/Cargo.toml b/compiler/rustc_codegen_cranelift/Cargo.toml
+index ca03be20c..5300dbd40 100644
+--- a/compiler/rustc_codegen_cranelift/Cargo.toml
++++ b/compiler/rustc_codegen_cranelift/Cargo.toml
+@@ -4,23 +4,44 @@ version = "0.1.0"
+ edition = "2024"
+ 
+ [lib]
+-crate-type = ["dylib"]
++# Also a `lib`, so that a rustc that cannot load backend dylibs (on wasm)
++# links it in statically.
++crate-type = ["lib", "dylib"]
+ 
+ [dependencies]
+ # These have to be in sync with each other
+-cranelift-codegen = { version = "0.135.0", default-features = false, features = ["std", "timing", "unwind", "all-native-arch"] }
+-cranelift-frontend = { version = "0.135.0" }
+-cranelift-module = { version = "0.135.0" }
+-cranelift-native = { version = "0.135.0" }
+-cranelift-jit = { version = "0.135.0", optional = true }
+-cranelift-object = { version = "0.135.0", default-features = false }
++cranelift-codegen = { version = "0.136.2", default-features = false, features = ["std", "timing", "unwind", "all-native-arch"] }
++cranelift-frontend = { version = "0.136.2" }
++cranelift-module = { version = "0.136.2" }
++cranelift-native = { version = "0.136.2" }
++cranelift-jit = { version = "0.136.2", optional = true }
++cranelift-object = { version = "0.136.2", default-features = false }
+ target-lexicon = "0.13"
+ gimli = { version = "0.33", default-features = false, features = ["write"] }
+-object = { version = "0.39.1", default-features = false, features = ["std", "read_core", "write", "archive", "coff", "elf", "macho", "pe"] }
++object = { version = "0.40.0", default-features = false, features = ["std", "read_core", "write", "archive", "coff", "elf", "macho", "pe"] }
+ 
+ indexmap = "2.0.0"
+ libloading = { version = "0.9.0", optional = true }
+ smallvec = "1.8.1"
++cranelift-wasm-backend = { path = "../../../../../clif_to_wasm", features = ["module"] }
++
++# As a member of the rustc workspace, use the compiler crates directly.
++rustc_abi = { path = "../rustc_abi" }
++rustc_ast = { path = "../rustc_ast" }
++rustc_attr_ir = { path = "../rustc_attr_ir" }
++rustc_codegen_ssa = { path = "../rustc_codegen_ssa" }
++rustc_const_eval = { path = "../rustc_const_eval" }
++rustc_data_structures = { path = "../rustc_data_structures" }
++rustc_errors = { path = "../rustc_errors" }
++rustc_hir = { path = "../rustc_hir" }
++rustc_index = { path = "../rustc_index" }
++rustc_log = { path = "../rustc_log" }
++rustc_middle = { path = "../rustc_middle" }
++rustc_session = { path = "../rustc_session" }
++rustc_span = { path = "../rustc_span" }
++rustc_structures = { path = "../rustc_structures", optional = true }
++rustc_symbol_mangling = { path = "../rustc_symbol_mangling" }
++rustc_target = { path = "../rustc_target" }
+ 
+ # Uncomment to use an unreleased version of cranelift
+ #[patch.crates-io]
+@@ -44,7 +65,7 @@ smallvec = "1.8.1"
+ [features]
+ # Enable features not ready to be enabled when compiling as part of rustc
+ unstable-features = ["jit", "inline_asm_sym"]
+-jit = ["cranelift-jit", "libloading"]
++jit = ["cranelift-jit", "libloading", "rustc_structures"]
+ inline_asm_sym = []
+ unwinding = [] # Not yet included in unstable-features for performance reasons
+ 
+diff --git a/compiler/rustc_codegen_cranelift/src/base.rs b/compiler/rustc_codegen_cranelift/src/base.rs
+index b9de3ce55..048549c4a 100644
+--- a/compiler/rustc_codegen_cranelift/src/base.rs
++++ b/compiler/rustc_codegen_cranelift/src/base.rs
+@@ -239,7 +239,7 @@ pub(crate) fn compile_fn(
+             &clif_comments,
+         );
+ 
+-        if let Some(disasm) = &context.compiled_code().unwrap().vcode {
++        if let Some(disasm) = context.compiled_code().and_then(|c| c.vcode.as_ref()) {
+             crate::pretty_clif::write_ir_file(
+                 output_filenames,
+                 &format!("{}.vcode", codegened_func.symbol_name),
+diff --git a/compiler/rustc_codegen_cranelift/src/driver/aot.rs b/compiler/rustc_codegen_cranelift/src/driver/aot.rs
+index 06a7f28a7..a05066793 100644
+--- a/compiler/rustc_codegen_cranelift/src/driver/aot.rs
++++ b/compiler/rustc_codegen_cranelift/src/driver/aot.rs
+@@ -31,11 +31,99 @@
+ use crate::global_asm::{GlobalAsmConfig, GlobalAsmContext};
+ use crate::prelude::*;
+ use crate::unwind_module::UnwindModule;
++use cranelift_module::DataId;
++
++/// The object file a codegen unit is compiled into: a native one through
++/// `cranelift-object`, or a wasm one through `cranelift-wasm-backend`.
++pub(crate) enum AotObject {
++    Native(UnwindModule<ObjectModule>),
++    Wasm(cranelift_wasm_backend::object_module::WasmObjectModule),
++}
++
++macro_rules! with_module {
++    ($self:expr, $m:ident => $e:expr) => {
++        match $self {
++            AotObject::Native($m) => $e,
++            AotObject::Wasm($m) => $e,
++        }
++    };
++}
++
++impl Module for AotObject {
++    fn isa(&self) -> &dyn cranelift_codegen::isa::TargetIsa {
++        with_module!(self, m => m.isa())
++    }
++
++    fn declarations(&self) -> &cranelift_module::ModuleDeclarations {
++        with_module!(self, m => m.declarations())
++    }
++
++    fn declare_function(
++        &mut self,
++        name: &str,
++        linkage: Linkage,
++        signature: &Signature,
++    ) -> cranelift_module::ModuleResult<FuncId> {
++        with_module!(self, m => m.declare_function(name, linkage, signature))
++    }
++
++    fn declare_anonymous_function(
++        &mut self,
++        signature: &Signature,
++    ) -> cranelift_module::ModuleResult<FuncId> {
++        with_module!(self, m => m.declare_anonymous_function(signature))
++    }
++
++    fn declare_data(
++        &mut self,
++        name: &str,
++        linkage: Linkage,
++        writable: bool,
++        tls: bool,
++    ) -> cranelift_module::ModuleResult<DataId> {
++        with_module!(self, m => m.declare_data(name, linkage, writable, tls))
++    }
++
++    fn declare_anonymous_data(
++        &mut self,
++        writable: bool,
++        tls: bool,
++    ) -> cranelift_module::ModuleResult<DataId> {
++        with_module!(self, m => m.declare_anonymous_data(writable, tls))
++    }
++
++    fn define_function_with_control_plane(
++        &mut self,
++        func: FuncId,
++        ctx: &mut Context,
++        ctrl_plane: &mut cranelift_codegen::control::ControlPlane,
++    ) -> cranelift_module::ModuleResult<()> {
++        with_module!(self, m => m.define_function_with_control_plane(func, ctx, ctrl_plane))
++    }
++
++    fn define_function_bytes(
++        &mut self,
++        func_id: FuncId,
++        alignment: u64,
++        bytes: &[u8],
++        relocs: &[cranelift_module::ModuleReloc],
++    ) -> cranelift_module::ModuleResult<()> {
++        with_module!(self, m => m.define_function_bytes(func_id, alignment, bytes, relocs))
++    }
++
++    fn define_data(
++        &mut self,
++        data_id: DataId,
++        data: &cranelift_module::DataDescription,
++    ) -> cranelift_module::ModuleResult<()> {
++        with_module!(self, m => m.define_data(data_id, data))
++    }
++}
+ 
+ pub(crate) struct AotModule {
+     producer: String,
+     global_asm_config: GlobalAsmConfig,
+-    module: UnwindModule<ObjectModule>,
++    module: AotObject,
+     debug_context: Option<DebugContext>,
+     codegened_functions: Vec<CodegenedFunction>,
+     global_asm: String,
+@@ -44,6 +132,18 @@ pub(crate) struct AotModule {
+ fn make_module(tcx: TyCtxt<'_>, cgu_name: &str) -> AotModule {
+     let isa = crate::build_isa(tcx.sess, false);
+ 
++    if crate::wasm::is_wasm(tcx.sess) {
++        return AotModule {
++            producer: crate::debuginfo::producer(tcx.sess),
++            global_asm_config: GlobalAsmConfig::new(tcx.sess),
++            module: AotObject::Wasm(crate::wasm::make_module(tcx.sess, isa)),
++            // No DWARF for wasm yet.
++            debug_context: None,
++            codegened_functions: vec![],
++            global_asm: String::new(),
++        };
++    }
++
+     let mut builder = ObjectBuilder::new(
+         isa,
+         cgu_name.to_owned() + ".o",
+@@ -62,11 +162,11 @@ fn make_module(tcx: TyCtxt<'_>, cgu_name: &str) -> AotModule {
+         tcx.sess.opts.unstable_opts.function_sections.unwrap_or(default_function_sections),
+     );
+ 
+-    let module = UnwindModule::new(
++    let module = AotObject::Native(UnwindModule::new(
+         ObjectModule::new(builder),
+         &rustc_symbol_mangling::eh_personality_symbol(tcx),
+         true,
+-    );
++    ));
+ 
+     let producer = crate::debuginfo::producer(tcx.sess);
+     let global_asm_config = GlobalAsmConfig::new(tcx.sess);
+@@ -87,13 +187,40 @@ fn make_module(tcx: TyCtxt<'_>, cgu_name: &str) -> AotModule {
+ fn emit_module(
+     output_filenames: &OutputFilenames,
+     prof: &SelfProfilerRef,
+-    module: UnwindModule<ObjectModule>,
++    module: AotObject,
+     debug: Option<DebugContext>,
+     kind: ModuleKind,
+     name: String,
+     global_asm_object: Option<PathBuf>,
+     producer_str: &str,
+ ) -> Result<CompiledModule, String> {
++    let module = match module {
++        AotObject::Native(module) => module,
++        AotObject::Wasm(module) => {
++            let tmp_file = output_filenames.temp_path_for_cgu(OutputType::Object, &name);
++            let bytes = module.finish();
++            if let Err(err) = std::fs::write(&tmp_file, &bytes) {
++                return Err(format!("error writing object file: {}", err));
++            }
++            if prof.enabled() {
++                prof.artifact_size(
++                    "object_file",
++                    tmp_file.file_name().unwrap().to_string_lossy(),
++                    bytes.len() as u64,
++                );
++            }
++            return Ok(CompiledModule {
++                name,
++                kind,
++                object: Some(tmp_file),
++                global_asm_object,
++                dwarf_object: None,
++                bytecode: None,
++                assembly: None,
++                llvm_ir: None,
++            });
++        }
++    };
+     let mut product = module.finish();
+ 
+     if let Some(mut debug) = debug {
+@@ -252,6 +379,12 @@ fn compile_cgu(
+             Ok(Some(global_asm_object_file))
+         })?;
+ 
++    if let AotObject::Wasm(m) = &aot_module.module {
++        for w in m.warnings() {
++            dcx.warn(format!("cranelift-wasm-backend: {w} (the function traps when called)"));
++        }
++    }
++
+     prof.generic_activity_with_arg("write object file", &*cgu_name).run(|| {
+         emit_module(
+             output_filenames,
+diff --git a/compiler/rustc_codegen_cranelift/src/lib.rs b/compiler/rustc_codegen_cranelift/src/lib.rs
+index a30dd1c3e..ba2f3706a 100644
+--- a/compiler/rustc_codegen_cranelift/src/lib.rs
++++ b/compiler/rustc_codegen_cranelift/src/lib.rs
+@@ -28,9 +28,6 @@
+ extern crate rustc_symbol_mangling;
+ extern crate rustc_target;
+ 
+-// This prevents duplicating functions and statics that are already part of the host rustc process.
+-#[allow(unused_extern_crates)]
+-extern crate rustc_driver;
+ 
+ use std::any::Any;
+ use std::env;
+@@ -79,6 +76,7 @@
+ mod unwind_module;
+ mod value_and_place;
+ mod vtable;
++mod wasm;
+ 
+ mod prelude {
+     pub(crate) use cranelift_codegen::Context;
+@@ -176,6 +174,12 @@ fn target_config(&self, sess: &EarlySession) -> TargetConfig {
+                 // AArch64 mandates Neon support
+                 _ => vec![sym::neon],
+             },
++            Arch::Wasm32 | Arch::Wasm64 => {
++                crate::wasm::target_features_of(&sess.target, &sess.opts.cg.target_feature)
++                    .iter()
++                    .map(|f| Symbol::intern(f))
++                    .collect()
++            }
+             _ => vec![],
+         };
+ 
+@@ -343,6 +347,10 @@ fn build_isa(sess: &Session, jit: bool) -> Arc<dyn TargetIsa + 'static> {
+ 
+     let flags = settings::Flags::new(flags_builder);
+ 
++    if crate::wasm::is_wasm(sess) {
++        return crate::wasm::build_isa(sess, flags);
++    }
++
+     let isa_builder = match sess.opts.cg.target_cpu.as_deref() {
+         Some(NATIVE_CPU) => cranelift_native::builder_with_options(true).unwrap(),
+         Some(value) => {
+@@ -377,7 +385,7 @@ fn build_isa(sess: &Session, jit: bool) -> Arc<dyn TargetIsa + 'static> {
+ }
+ 
+ /// This is the entrypoint for a hot plugged rustc_codegen_cranelift
+-#[unsafe(no_mangle)]
++#[cfg_attr(not(target_family = "wasm"), unsafe(no_mangle))]
+ pub fn __rustc_codegen_backend() -> Box<dyn CodegenBackend> {
+     Box::new(CraneliftCodegenBackend { config: None })
+ }
+diff --git a/compiler/rustc_codegen_cranelift/src/main_shim.rs b/compiler/rustc_codegen_cranelift/src/main_shim.rs
+index 75dbfb122..212782098 100644
+--- a/compiler/rustc_codegen_cranelift/src/main_shim.rs
++++ b/compiler/rustc_codegen_cranelift/src/main_shim.rs
+@@ -53,11 +53,17 @@ fn create_entry_fn(
+             Unnormalized::new_wip(main_ret_ty.no_bound_vars().unwrap()),
+         );
+ 
++        // Some targets (wasm) call an entry point without arguments.
++        let argc_argv = tcx.sess.target.options.main_needs_argc_argv;
+         let cmain_sig = Signature {
+-            params: vec![
+-                AbiParam::new(m.target_config().pointer_type()),
+-                AbiParam::new(m.target_config().pointer_type()),
+-            ],
++            params: if argc_argv {
++                vec![
++                    AbiParam::new(m.target_config().pointer_type()),
++                    AbiParam::new(m.target_config().pointer_type()),
++                ]
++            } else {
++                vec![]
++            },
+             returns: vec![AbiParam::new(m.target_config().pointer_type() /*isize*/)],
+             call_conv: crate::conv_to_call_conv(
+                 tcx.sess,
+@@ -89,8 +95,12 @@ fn create_entry_fn(
+ 
+             let block = bcx.create_block();
+             bcx.switch_to_block(block);
+-            let arg_argc = bcx.append_block_param(block, m.target_config().pointer_type());
+-            let arg_argv = bcx.append_block_param(block, m.target_config().pointer_type());
++            let ptr = m.target_config().pointer_type();
++            let (arg_argc, arg_argv) = if argc_argv {
++                (bcx.append_block_param(block, ptr), bcx.append_block_param(block, ptr))
++            } else {
++                (bcx.ins().iconst(ptr, 0), bcx.ins().iconst(ptr, 0))
++            };
+             let arg_sigpipe = bcx.ins().iconst(types::I8, sigpipe as i64);
+ 
+             let main_func_ref = m.declare_func_in_func(main_func_id, bcx.func);
+diff --git a/compiler/rustc_codegen_cranelift/src/wasm.rs b/compiler/rustc_codegen_cranelift/src/wasm.rs
+new file mode 100644
+index 000000000..03fde55e5
+--- /dev/null
++++ b/compiler/rustc_codegen_cranelift/src/wasm.rs
+@@ -0,0 +1,80 @@
++//! Compiling for wasm targets through `cranelift-wasm-backend`, which turns
++//! the CLIF of each function into wasm and writes relocatable wasm objects
++//! that `wasm-ld` or `wild` link with the (LLVM-compiled) sysroot.
++
++use cranelift_codegen::isa::OwnedTargetIsa;
++use cranelift_codegen::settings;
++use cranelift_wasm_backend::object_module::{
++    ObjectOptions, THREADS_FEATURES, WasmObjectModule, frontend_isa,
++};
++use rustc_session::Session;
++use rustc_target::spec::Arch;
++
++pub(crate) fn is_wasm(sess: &Session) -> bool {
++    matches!(sess.target.arch, Arch::Wasm32 | Arch::Wasm64)
++}
++
++fn memory64(sess: &Session) -> bool {
++    sess.target.arch == Arch::Wasm64
++}
++
++/// The target features enabled by the target spec and `-Ctarget-feature`.
++pub(crate) fn target_features(sess: &Session) -> Vec<String> {
++    target_features_of(&sess.target, &sess.opts.cg.target_feature)
++}
++
++pub(crate) fn target_features_of(target: &rustc_target::spec::Target, cg: &str) -> Vec<String> {
++    let mut features: Vec<String> = Vec::new();
++    for list in [&*target.options.features, cg] {
++        for f in list.split(',') {
++            if let Some(name) = f.strip_prefix('+') {
++                if !features.iter().any(|x| x == name) {
++                    features.push(name.to_owned());
++                }
++            } else if let Some(name) = f.strip_prefix('-') {
++                features.retain(|x| x != name);
++            }
++        }
++    }
++    features
++}
++
++/// Whether the program has threads (shared memory and TLS).
++pub(crate) fn threads(sess: &Session) -> bool {
++    target_features(sess).iter().any(|f| f == "atomics")
++}
++
++pub(crate) fn build_isa(sess: &Session, flags: settings::Flags) -> OwnedTargetIsa {
++    frontend_isa(flags, memory64(sess))
++        .unwrap_or_else(|err| sess.dcx().fatal(format!("failed to build TargetIsa: {err}")))
++}
++
++pub(crate) fn make_module(sess: &Session, isa: OwnedTargetIsa) -> WasmObjectModule {
++    let mut config = cranelift_wasm_backend::Config::default();
++    config.module.memory64 = memory64(sess);
++    // The sysroot is compiled by LLVM: use its convention for multiple
++    // return values.
++    config.module.demote_multi_results = true;
++    let threads = threads(sess);
++    let mut features: Vec<String> = THREADS_FEATURES.iter().map(|&f| f.to_owned()).collect();
++    if !threads {
++        features.retain(|f| f != "atomics");
++    }
++    for f in target_features(sess) {
++        if !features.contains(&f) {
++            features.push(f);
++        }
++    }
++    WasmObjectModule::new(
++        isa,
++        ObjectOptions {
++            config,
++            threads,
++            features,
++            // Functions using what the backend does not support yet trap
++            // when called, with a warning at compile time.
++            stub_unsupported: std::env::var("CG_CLIF_WASM_STRICT").as_deref() != Ok("1"),
++            libcall_names: cranelift_module::default_libcall_names(),
++        },
++    )
++}
+diff --git a/compiler/rustc_codegen_ssa/src/back/linker.rs b/compiler/rustc_codegen_ssa/src/back/linker.rs
+index ffb9130ed..163e7bd3c 100644
+--- a/compiler/rustc_codegen_ssa/src/back/linker.rs
++++ b/compiler/rustc_codegen_ssa/src/back/linker.rs
+@@ -132,7 +132,9 @@ pub(crate) fn get_linker<'a>(
+     if !msvc_changed_path && let Some(path) = env::var_os("PATH") {
+         new_path.extend(env::split_paths(&path));
+     }
+-    cmd.env("PATH", env::join_paths(new_path).unwrap());
++    if cfg!(not(target_family = "wasm")) {
++        cmd.env("PATH", env::join_paths(new_path).unwrap());
++    }
+ 
+     // FIXME: Move `/LIBPATH` addition for uwp targets from the linker construction
+     // to the linker args construction.
+diff --git a/compiler/rustc_driver/Cargo.toml b/compiler/rustc_driver/Cargo.toml
+index 519097198..bd6f96fd1 100644
+--- a/compiler/rustc_driver/Cargo.toml
++++ b/compiler/rustc_driver/Cargo.toml
+@@ -4,7 +4,7 @@ version = "0.0.0"
+ edition = "2024"
+ 
+ [lib]
+-crate-type = ["dylib"]
++crate-type = ["lib", "dylib"]
+ 
+ [dependencies]
+ # tidy-alphabetical-start
+diff --git a/compiler/rustc_driver_impl/Cargo.toml b/compiler/rustc_driver_impl/Cargo.toml
+index 6dba3dff4..daa84d523 100644
+--- a/compiler/rustc_driver_impl/Cargo.toml
++++ b/compiler/rustc_driver_impl/Cargo.toml
+@@ -60,6 +60,7 @@ ctrlc = "3.4.4"
+ [features]
+ # tidy-alphabetical-start
+ check_only = ['rustc_interface/check_only']
++cranelift = ['rustc_interface/cranelift']
+ jemalloc = []
+ llvm = ['rustc_interface/llvm']
+ llvm_offload = ['rustc_interface/llvm_offload']
+diff --git a/compiler/rustc_driver_impl/src/lib.rs b/compiler/rustc_driver_impl/src/lib.rs
+index 3e673a6c1..8b5d38184 100644
+--- a/compiler/rustc_driver_impl/src/lib.rs
++++ b/compiler/rustc_driver_impl/src/lib.rs
+@@ -1439,7 +1439,7 @@ fn ice_path_with_config(config: Option<&UnstableOptions>) -> &'static Option<Pat
+         };
+         // Don't use a standard datetime format because Windows doesn't support `:` in paths
+         let file_now = jiff::Zoned::now().strftime("%Y-%m-%dT%H_%M_%S");
+-        let pid = std::process::id();
++        let pid = if cfg!(target_family = "wasm") { 1 } else { std::process::id() };
+         path.push(format!("rustc-ice-{file_now}-{pid}.txt"));
+         Some(path)
+     })
+diff --git a/compiler/rustc_interface/Cargo.toml b/compiler/rustc_interface/Cargo.toml
+index aea445679..b405b76ae 100644
+--- a/compiler/rustc_interface/Cargo.toml
++++ b/compiler/rustc_interface/Cargo.toml
+@@ -14,6 +14,7 @@ rustc_attr_ir = { path = "../rustc_attr_ir" }
+ rustc_attr_parsing = { path = "../rustc_attr_parsing" }
+ rustc_borrowck = { path = "../rustc_borrowck" }
+ rustc_builtin_macros = { path = "../rustc_builtin_macros" }
++rustc_codegen_cranelift = { path = "../rustc_codegen_cranelift", optional = true }
+ rustc_codegen_llvm = { path = "../rustc_codegen_llvm", optional = true }
+ rustc_codegen_ssa = { path = "../rustc_codegen_ssa" }
+ rustc_const_eval = { path = "../rustc_const_eval" }
+@@ -62,6 +63,7 @@ rustc_abi = { path = "../rustc_abi" }
+ [features]
+ # tidy-alphabetical-start
+ check_only = ['rustc_codegen_llvm?/check_only']
++cranelift = ['rustc_codegen_cranelift']
+ llvm = ['dep:rustc_codegen_llvm']
+ llvm_offload = ['rustc_codegen_llvm/llvm_offload']
+ # tidy-alphabetical-end
+diff --git a/compiler/rustc_interface/src/util.rs b/compiler/rustc_interface/src/util.rs
+index 06f354fef..cf639ca2c 100644
+--- a/compiler/rustc_interface/src/util.rs
++++ b/compiler/rustc_interface/src/util.rs
+@@ -387,6 +387,8 @@ pub fn get_codegen_backend(
+             "dummy" => || Box::new(DummyCodegenBackend),
+             #[cfg(feature = "llvm")]
+             "llvm" => rustc_codegen_llvm::LlvmCodegenBackend::new,
++            #[cfg(feature = "cranelift")]
++            "cranelift" => rustc_codegen_cranelift::__rustc_codegen_backend,
+             backend_name => get_codegen_sysroot(early_dcx, sysroot, backend_name),
+         }
+     });
+diff --git a/compiler/rustc_session/src/filesearch.rs b/compiler/rustc_session/src/filesearch.rs
+index 10c62d932..bf15a94f4 100644
+--- a/compiler/rustc_session/src/filesearch.rs
++++ b/compiler/rustc_session/src/filesearch.rs
+@@ -4,6 +4,7 @@
+ use std::sync::Arc;
+ use std::{env, fs, iter};
+ 
++#[cfg(any(unix, windows))]
+ use rustc_fs_util::try_canonicalize;
+ use rustc_target::spec::Target;
+ 
+@@ -341,6 +342,10 @@ fn from_env_args_next() -> Option<PathBuf> {
+         rustlib_path.exists().then_some(p)
+     }
+ 
++    if cfg!(target_os = "wasi") {
++        return PathBuf::from("dist");
++    }
++
+     from_env_args_next()
+         .unwrap_or_else(|| default_from_rustc_driver_dll().expect("Failed finding sysroot"))
+ }
+diff --git a/compiler/rustc_session/src/output.rs b/compiler/rustc_session/src/output.rs
+index 4824abae6..0a24e1bcd 100644
+--- a/compiler/rustc_session/src/output.rs
++++ b/compiler/rustc_session/src/output.rs
+@@ -37,6 +37,10 @@ pub fn out_filename(
+ /// check this already -- however, the Linux linker will happily overwrite a
+ /// read-only file. We should be consistent.
+ pub fn check_file_is_writeable(file: &Path, sess: &Session) {
++    // WASI has no notion of file permissions to check.
++    if cfg!(target_os = "wasi") {
++        return;
++    }
+     if !is_writeable(file) {
+         sess.dcx().emit_fatal(FileIsNotWriteable { file });
+     }
+diff --git a/compiler/rustc_target/src/spec/targets/wasm32_wasip1.rs b/compiler/rustc_target/src/spec/targets/wasm32_wasip1.rs
+index 0983327d3..4b9f35f78 100644
+--- a/compiler/rustc_target/src/spec/targets/wasm32_wasip1.rs
++++ b/compiler/rustc_target/src/spec/targets/wasm32_wasip1.rs
+@@ -26,7 +26,7 @@ pub(crate) fn target() -> Target {
+     options.post_link_objects_self_contained = crt_objects::post_wasi_self_contained();
+ 
+     // FIXME: Figure out cases in which WASM needs to link with a native toolchain.
+-    options.link_self_contained = LinkSelfContainedDefault::True;
++    options.link_self_contained = LinkSelfContainedDefault::False;
+ 
+     // Right now this is a bit of a workaround but we're currently saying that
+     // the target by default has a static crt which we're taking as a signal
+diff --git a/compiler/rustc_target/src/spec/targets/wasm32_wasip1_threads.rs b/compiler/rustc_target/src/spec/targets/wasm32_wasip1_threads.rs
+index 0fa7ae291..fbc12a397 100644
+--- a/compiler/rustc_target/src/spec/targets/wasm32_wasip1_threads.rs
++++ b/compiler/rustc_target/src/spec/targets/wasm32_wasip1_threads.rs
+@@ -37,7 +37,7 @@ pub(crate) fn target() -> Target {
+     options.post_link_objects_self_contained = crt_objects::post_wasi_self_contained();
+ 
+     // FIXME: Figure out cases in which WASM needs to link with a native toolchain.
+-    options.link_self_contained = LinkSelfContainedDefault::True;
++    options.link_self_contained = LinkSelfContainedDefault::False;
+ 
+     // Right now this is a bit of a workaround but we're currently saying that
+     // the target by default has a static crt which we're taking as a signal
+diff --git a/src/bootstrap/src/core/build_steps/compile.rs b/src/bootstrap/src/core/build_steps/compile.rs
+index 3021f52d1..1b9cf39a9 100644
+--- a/src/bootstrap/src/core/build_steps/compile.rs
++++ b/src/bootstrap/src/core/build_steps/compile.rs
+@@ -2423,11 +2423,6 @@ fn run(self, builder: &Builder<'_>) -> Compiler {
+                 };
+ 
+                 match backend {
+-                    CodegenBackendKind::Cranelift => {
+-                        let stamp = builder
+-                            .ensure(CraneliftCodegenBackend { compilers: prepare_compilers() });
+-                        copy_codegen_backends_to_sysroot(builder, stamp, target_compiler);
+-                    }
+                     CodegenBackendKind::Gcc => {
+                         // We need to build cg_gcc for the host target of the compiler which we
+                         // build here, which is `target_compiler`.
+@@ -2497,7 +2492,9 @@ fn run(self, builder: &Builder<'_>) -> Compiler {
+                         // library sysroots, so that they are available for cg_gcc.
+                         dylib_set.install_to(builder, target_compiler);
+                     }
+-                    CodegenBackendKind::Llvm | CodegenBackendKind::Custom(_) => continue,
++                    CodegenBackendKind::Cranelift
++                    | CodegenBackendKind::Llvm
++                    | CodegenBackendKind::Custom(_) => continue,
+                 }
+             }
+         }
+diff --git a/src/bootstrap/src/core/session.rs b/src/bootstrap/src/core/session.rs
+index df6c8b395..b170d68d2 100644
+--- a/src/bootstrap/src/core/session.rs
++++ b/src/bootstrap/src/core/session.rs
+@@ -14,6 +14,7 @@
+ use crate::core::build_steps::format::InternalRustfmt;
+ use crate::core::build_steps::test::TestTarget;
+ use crate::core::build_steps::vendor::VENDOR_DIR;
++use crate::core::backend::CodegenBackendKind;
+ use crate::core::builder::{Builder, Kind};
+ use crate::core::compiler::Compiler;
+ use crate::core::config::flags::{self, Subcommand};
+@@ -702,6 +703,14 @@ pub(crate) fn rustc_features(
+         if self.config.llvm_offload {
+             features.push("llvm_offload");
+         }
++        // A compiler that cannot load codegen backend dylibs (on wasm) links
++        // cg_clif in statically.
++        if self.config.enabled_codegen_backends(target).contains(&CodegenBackendKind::Cranelift)
++            && target.contains("wasm")
++            && check("cranelift")
++        {
++            features.push("cranelift");
++        }
+         // keep in sync with `bootstrap/compile.rs:rustc_cargo_env`
+         if self.config.rust_randomize_layout && check("rustc_randomized_layouts") {
+             features.push("rustc_randomized_layouts");
+-- 
+2.39.5 (Apple Git-154)
+

@@ -1,0 +1,187 @@
+From a73b7dbbe1c29b8c5b630ba6c4980fe63db64572 Mon Sep 17 00:00:00 2001
+From: Ryan Buckley <10402042+ryancbuckley@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 00:19:06 -0400
+Subject: [PATCH] Wasm proc macros: a small built-in WASI for the interpreter,
+ and _initialize
+
+wasmi_wasi depends on cap-std and wasi-common, which don't build for a WASI
+host such as rustc.wasm. Proc macros only need to print, read the clock and
+get random numbers; other WASI calls fail with ENOSYS. Reactor modules are
+initialized with _initialize before use.
+---
+ compiler/rustc_metadata/src/host_dylib.rs | 148 +++++++++++++++++++++-
+ 1 file changed, 146 insertions(+), 2 deletions(-)
+
+diff --git a/compiler/rustc_metadata/src/host_dylib.rs b/compiler/rustc_metadata/src/host_dylib.rs
+index 87d7cb56b..f8675984e 100644
+--- a/compiler/rustc_metadata/src/host_dylib.rs
++++ b/compiler/rustc_metadata/src/host_dylib.rs
+@@ -175,7 +175,8 @@ pub(crate) fn dlsym_proc_macros(
+                         unreachable!()
+                     })
+                     .unwrap();
+-                let instance = linker.instantiate_and_start(&mut store, &module).unwrap();
++                add_wasi_to_linker(&mut linker, &module);
++                let instance = instantiate(&mut linker, &mut store, &module);
+ 
+                 let memory = instance.get_export(&store, "memory").unwrap().into_memory().unwrap();
+ 
+@@ -271,7 +272,8 @@ fn read(
+                     },
+                 )
+                 .unwrap();
+-            let instance = linker.instantiate_and_start(&mut store, &module).unwrap();
++            add_wasi_to_linker(&mut linker, &module);
++            let instance = instantiate(&mut linker, &mut store, &module);
+ 
+             fn get_func<T: wasmi::WasmParams, U: wasmi::WasmResults>(
+                 instance: &wasmi::Instance,
+@@ -315,3 +317,145 @@ fn get_func<T: wasmi::WasmParams, U: wasmi::WasmResults>(
+         }),
+     }
+ }
++
++/// Instantiates a wasm proc macro and runs its WASI reactor initialization.
++fn instantiate<T>(
++    linker: &mut wasmi::Linker<T>,
++    store: &mut wasmi::Store<T>,
++    module: &wasmi::Module,
++) -> wasmi::Instance {
++    let instance = linker.instantiate_and_start(&mut *store, module).unwrap();
++    if let Some(init) = instance.get_typed_func::<(), ()>(&*store, "_initialize").ok() {
++        init.call(&mut *store, ()).unwrap();
++    }
++    instance
++}
++
++/// Defines the parts of WASI preview 1 that a wasm proc macro may use: it can
++/// write to stdout and stderr and read the clock and random numbers, and sees
++/// no arguments, environment variables or files. Other WASI functions it
++/// imports fail with `ENOSYS`.
++fn add_wasi_to_linker<T>(linker: &mut wasmi::Linker<T>, module: &wasmi::Module) {
++    use std::hash::BuildHasher;
++    use std::io::Write;
++
++    use wasmi::{Caller, Error};
++
++    const WASI: &str = "wasi_snapshot_preview1";
++    const EBADF: i32 = 8;
++    const EIO: i32 = 29;
++    const ENOSYS: i32 = 52;
++    const DEFINED: &[&str] = &[
++        "args_get",
++        "args_sizes_get",
++        "clock_time_get",
++        "environ_get",
++        "environ_sizes_get",
++        "fd_prestat_get",
++        "fd_write",
++        "proc_exit",
++        "random_get",
++        "sched_yield",
++    ];
++
++    fn memory<T>(caller: &Caller<'_, T>) -> Result<wasmi::Memory, Error> {
++        caller
++            .get_export("memory")
++            .and_then(wasmi::Extern::into_memory)
++            .ok_or_else(|| Error::new("the wasm proc macro exports no memory"))
++    }
++    fn write<T>(caller: &mut Caller<'_, T>, ptr: u32, data: &[u8]) -> Result<(), Error> {
++        Ok(memory(caller)?.write(caller, ptr as usize, data)?)
++    }
++    fn sizes_get<T>(mut caller: Caller<'_, T>, count: u32, size: u32) -> Result<i32, Error> {
++        write(&mut caller, count, &0u32.to_le_bytes())?;
++        write(&mut caller, size, &0u32.to_le_bytes())?;
++        Ok(0)
++    }
++
++    linker.func_wrap(WASI, "args_get", |_: Caller<'_, T>, _: u32, _: u32| 0i32).unwrap();
++    linker
++        .func_wrap(WASI, "args_sizes_get", |c: Caller<'_, T>, n: u32, size: u32| sizes_get(c, n, size))
++        .unwrap();
++    linker.func_wrap(WASI, "environ_get", |_: Caller<'_, T>, _: u32, _: u32| 0i32).unwrap();
++    linker
++        .func_wrap(WASI, "environ_sizes_get", |c: Caller<'_, T>, n: u32, size: u32| sizes_get(c, n, size))
++        .unwrap();
++    linker
++        .func_wrap(
++            WASI,
++            "clock_time_get",
++            |mut caller: Caller<'_, T>, _id: u32, _precision: u64, time: u32| {
++                let now = std::time::SystemTime::now()
++                    .duration_since(std::time::UNIX_EPOCH)
++                    .map_or(0, |d| d.as_nanos() as u64);
++                write(&mut caller, time, &now.to_le_bytes())?;
++                Ok(0i32)
++            },
++        )
++        .unwrap();
++    linker.func_wrap(WASI, "fd_prestat_get", |_: Caller<'_, T>, _: u32, _: u32| EBADF).unwrap();
++    linker
++        .func_wrap(
++            WASI,
++            "fd_write",
++            |mut caller: Caller<'_, T>, fd: u32, iovs: u32, iovs_len: u32, written: u32| {
++                let memory = memory(&caller)?;
++                let mut data = Vec::new();
++                for i in 0..iovs_len {
++                    let mut iov = [0; 8];
++                    memory.read(&caller, (iovs + 8 * i) as usize, &mut iov)?;
++                    let ptr = u32::from_le_bytes(iov[..4].try_into().unwrap());
++                    let len = u32::from_le_bytes(iov[4..].try_into().unwrap());
++                    let start = data.len();
++                    data.resize(start + len as usize, 0);
++                    memory.read(&caller, ptr as usize, &mut data[start..])?;
++                }
++                let result = match fd {
++                    1 => std::io::stdout().write_all(&data),
++                    2 => std::io::stderr().write_all(&data),
++                    _ => return Ok(EBADF),
++                };
++                if result.is_err() {
++                    return Ok(EIO);
++                }
++                write(&mut caller, written, &(data.len() as u32).to_le_bytes())?;
++                Ok(0)
++            },
++        )
++        .unwrap();
++    linker
++        .func_wrap(WASI, "proc_exit", |_: Caller<'_, T>, code: i32| -> Result<(), Error> {
++            Err(Error::i32_exit(code))
++        })
++        .unwrap();
++    linker
++        .func_wrap(WASI, "random_get", |mut caller: Caller<'_, T>, buf: u32, len: u32| {
++            let state = std::collections::hash_map::RandomState::new();
++            let data: Vec<u8> =
++                (0..len.div_ceil(8)).flat_map(|i| state.hash_one(i).to_le_bytes()).collect();
++            write(&mut caller, buf, &data[..len as usize])?;
++            Ok(0i32)
++        })
++        .unwrap();
++    linker.func_wrap(WASI, "sched_yield", |_: Caller<'_, T>| 0i32).unwrap();
++
++    for import in module.imports() {
++        if import.module() != WASI || DEFINED.contains(&import.name()) {
++            continue;
++        }
++        let Some(ty) = import.ty().func() else { continue };
++        let name = import.name().to_owned();
++        let returns_errno = ty.results() == [wasmi::ValType::I32];
++        linker
++            .func_new(WASI, &name.clone(), ty.clone(), move |_, _, results| {
++                if returns_errno {
++                    results[0] = wasmi::Val::I32(ENOSYS);
++                    Ok(())
++                } else {
++                    Err(Error::new(format!("wasm proc macros cannot use WASI's `{name}`")))
++                }
++            })
++            .unwrap();
++    }
++}
+-- 
+2.39.5 (Apple Git-154)
+

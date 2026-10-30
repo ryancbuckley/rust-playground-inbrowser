@@ -1,0 +1,533 @@
+From 58238b6909cf6249675304fab3a67afba781f4e0 Mon Sep 17 00:00:00 2001
+From: bjorn3 <17426603+bjorn3@users.noreply.github.com>
+Date: Sat, 30 May 2026 14:44:10 +0200
+Subject: [PATCH] Support arbitrary closures for proc macros on the server side
+
+---
+ compiler/rustc_builtin_macros/src/lib.rs      |  9 ++-
+ compiler/rustc_expand/src/proc_macro.rs       | 15 ++---
+ compiler/rustc_expand_queries/src/derive.rs   |  6 +-
+ compiler/rustc_metadata/src/creader.rs        |  6 +-
+ compiler/rustc_metadata/src/host_dylib.rs     | 11 +++-
+ compiler/rustc_metadata/src/locator.rs        |  7 ++-
+ compiler/rustc_metadata/src/rmeta/decoder.rs  | 16 +++--
+ library/proc_macro/src/bridge/closure.rs      |  4 +-
+ library/proc_macro/src/bridge/mod.rs          |  7 ++-
+ library/proc_macro/src/bridge/server.rs       | 63 +++++++++++--------
+ .../proc-macro-srv/src/dylib/proc_macros.rs   |  7 ++-
+ .../crates/proc-macro-srv/src/lib.rs          |  1 +
+ 12 files changed, 93 insertions(+), 59 deletions(-)
+
+diff --git a/compiler/rustc_builtin_macros/src/lib.rs b/compiler/rustc_builtin_macros/src/lib.rs
+index c564e1477..a5760d93f 100644
+--- a/compiler/rustc_builtin_macros/src/lib.rs
++++ b/compiler/rustc_builtin_macros/src/lib.rs
+@@ -14,6 +14,7 @@
+ 
+ use std::sync::Arc;
+ 
++use rustc_data_structures::sync::IntoDynSyncSend;
+ use rustc_expand::base::{MacroExpanderFn, ResolverExpand, SyntaxExtensionKind};
+ use rustc_expand::proc_macro::BangProcMacro;
+ use rustc_span::sym;
+@@ -147,8 +148,12 @@ pub fn register_builtin_macros(resolver: &mut dyn ResolverExpand) {
+         From: from::expand_deriving_from,
+     }
+ 
+-    let client = rustc_proc_macro::bridge::client::Client::expand1(rustc_proc_macro::quote);
+-    register(sym::quote, SyntaxExtensionKind::Bang(Arc::new(BangProcMacro { client })));
++    let client = rustc_proc_macro::bridge::client::Client::expand1(rustc_proc_macro::quote)
++        .into_dyn_client();
++    register(
++        sym::quote,
++        SyntaxExtensionKind::Bang(Arc::new(BangProcMacro { client: IntoDynSyncSend(client) })),
++    );
+     let requires = SyntaxExtensionKind::Attr(Arc::new(contracts::ExpandRequires));
+     register(sym::contracts_requires, requires);
+     let ensures = SyntaxExtensionKind::Attr(Arc::new(contracts::ExpandEnsures));
+diff --git a/compiler/rustc_expand/src/proc_macro.rs b/compiler/rustc_expand/src/proc_macro.rs
+index 5e01b851b..9b298cfcd 100644
+--- a/compiler/rustc_expand/src/proc_macro.rs
++++ b/compiler/rustc_expand/src/proc_macro.rs
+@@ -1,6 +1,7 @@
+ use rustc_ast as ast;
+ use rustc_ast::tokenstream::TokenStream;
+ use rustc_data_structures::AtomicRef;
++use rustc_data_structures::marker::IntoDynSyncSend;
+ use rustc_data_structures::profiling::TimingGuard;
+ use rustc_errors::ErrorGuaranteed;
+ use rustc_parse::parser::{AllowConstBlockItems, ForceCollect, Parser};
+@@ -31,7 +32,7 @@ fn record_expand_proc_macro<'a>(
+ }
+ 
+ pub struct BangProcMacro {
+-    pub client: pm::bridge::client::Client,
++    pub client: IntoDynSyncSend<pm::bridge::server::DynClient>,
+ }
+ 
+ impl base::BangProcMacro for BangProcMacro {
+@@ -58,7 +59,7 @@ fn expand(
+ }
+ 
+ pub struct AttrProcMacro {
+-    pub client: pm::bridge::client::Client,
++    pub client: IntoDynSyncSend<pm::bridge::server::DynClient>,
+ }
+ 
+ impl base::AttrProcMacro for AttrProcMacro {
+@@ -88,7 +89,7 @@ fn expand(
+ }
+ 
+ pub struct DeriveProcMacro {
+-    pub client: DeriveClient,
++    pub client: IntoDynSyncSend<DeriveClient>,
+ }
+ 
+ impl MultiItemModifier for DeriveProcMacro {
+@@ -113,9 +114,9 @@ fn expand(
+         let res = if ecx.sess.opts.incremental.is_some()
+             && ecx.sess.opts.unstable_opts.cache_proc_macros
+         {
+-            (*EXPAND_DERIVE_MACRO_CACHED)(invoc_id, input, ecx, self.client)
++            (*EXPAND_DERIVE_MACRO_CACHED)(invoc_id, input, ecx, self.client.0.clone())
+         } else {
+-            expand_derive_macro(invoc_id, input, ecx, self.client)
++            expand_derive_macro(invoc_id, input, ecx, &self.client)
+         };
+ 
+         let Ok(output) = res else {
+@@ -156,13 +157,13 @@ fn expand(
+     }
+ }
+ 
+-type DeriveClient = pm::bridge::client::Client;
++type DeriveClient = pm::bridge::server::DynClient;
+ 
+ pub fn expand_derive_macro(
+     invoc_id: LocalExpnId,
+     input: TokenStream,
+     ecx: &mut ExtCtxt<'_>,
+-    client: DeriveClient,
++    client: &DeriveClient,
+ ) -> Result<TokenStream, ()> {
+     let _timer =
+         ecx.sess.prof.generic_activity_with_arg_recorder("expand_proc_macro", |recorder| {
+diff --git a/compiler/rustc_expand_queries/src/derive.rs b/compiler/rustc_expand_queries/src/derive.rs
+index 1254013ad..f0800cbeb 100644
+--- a/compiler/rustc_expand_queries/src/derive.rs
++++ b/compiler/rustc_expand_queries/src/derive.rs
+@@ -4,7 +4,7 @@
+ use rustc_proc_macro as pm;
+ use rustc_span::LocalExpnId;
+ 
+-type DeriveClient = pm::bridge::client::Client;
++type DeriveClient = pm::bridge::server::DynClient;
+ 
+ /// Stores the context necessary to expand a derive proc macro via a query.
+ struct QueryDeriveExpandCtx {
+@@ -29,7 +29,7 @@ fn enter<F, R>(ecx: &mut ExtCtxt<'_>, client: DeriveClient, f: F) -> R
+     /// Must be called while the `enter` function is active.
+     fn with<F, R>(f: F) -> R
+     where
+-        F: for<'a, 'b> FnOnce(&'b mut ExtCtxt<'a>, DeriveClient) -> R,
++        F: for<'a, 'b> FnOnce(&'b mut ExtCtxt<'a>, &DeriveClient) -> R,
+     {
+         DERIVE_EXPAND_CTX.with(|ctx| {
+             let ectx = {
+@@ -42,7 +42,7 @@ fn with<F, R>(f: F) -> R
+                 unsafe { casted.as_mut().unwrap() }
+             };
+ 
+-            f(ectx, ctx.client)
++            f(ectx, &ctx.client)
+         })
+     }
+ }
+diff --git a/compiler/rustc_metadata/src/creader.rs b/compiler/rustc_metadata/src/creader.rs
+index df15f7d15..cf31a895b 100644
+--- a/compiler/rustc_metadata/src/creader.rs
++++ b/compiler/rustc_metadata/src/creader.rs
+@@ -11,7 +11,7 @@
+ use rustc_data_structures::fx::FxHashSet;
+ use rustc_data_structures::owned_slice::OwnedSlice;
+ use rustc_data_structures::svh::Svh;
+-use rustc_data_structures::sync::{self, FreezeReadGuard, FreezeWriteGuard};
++use rustc_data_structures::sync::{self, FreezeReadGuard, FreezeWriteGuard, IntoDynSyncSend};
+ use rustc_data_structures::unord::UnordMap;
+ use rustc_expand::base::SyntaxExtension;
+ use rustc_hir::def_id::{CrateNum, LOCAL_CRATE, LocalDefId, StableCrateId};
+@@ -21,7 +21,7 @@
+ use rustc_lint_defs::builtin::{PARTIAL_STACK_PROTECTOR, UNUSED_CRATE_DEPENDENCIES};
+ use rustc_middle::ty::data_structures::IndexSet;
+ use rustc_middle::ty::{TyCtxt, TyCtxtFeed};
+-use rustc_proc_macro::bridge::client::Client as ProcMacroClient;
++use rustc_proc_macro::bridge::server::DynClient;
+ use rustc_session::Session;
+ use rustc_session::config::mitigation_coverage::{
+     DeniedPartialMitigationKind, DeniedPartialMitigationLevel,
+@@ -967,7 +967,7 @@ fn dlsym_proc_macros(
+         &self,
+         path: &Path,
+         stable_crate_id: StableCrateId,
+-    ) -> Result<&'static [ProcMacroClient], CrateError> {
++    ) -> Result<Vec<IntoDynSyncSend<DynClient>>, CrateError> {
+         Ok(crate::host_dylib::dlsym_proc_macros(path, stable_crate_id)?)
+     }
+ 
+diff --git a/compiler/rustc_metadata/src/host_dylib.rs b/compiler/rustc_metadata/src/host_dylib.rs
+index 8d944cc77..75a84218f 100644
+--- a/compiler/rustc_metadata/src/host_dylib.rs
++++ b/compiler/rustc_metadata/src/host_dylib.rs
+@@ -4,9 +4,11 @@
+ #[cfg(any(unix, windows))]
+ use std::time::Duration;
+ 
++use rustc_data_structures::sync::IntoDynSyncSend;
+ #[cfg(any(unix, windows))]
+ use rustc_fs_util::try_canonicalize;
+ use rustc_proc_macro::bridge::client::Client as ProcMacroClient;
++use rustc_proc_macro::bridge::server::DynClient;
+ use rustc_session::StableCrateId;
+ use tracing::debug;
+ 
+@@ -146,17 +148,20 @@ pub unsafe fn load_symbol_from_dylib<T: Copy>(
+ pub(crate) fn dlsym_proc_macros(
+     path: &Path,
+     stable_crate_id: StableCrateId,
+-) -> Result<&'static [ProcMacroClient], DylibError> {
++) -> Result<Vec<IntoDynSyncSend<DynClient>>, DylibError> {
+     let sym_name = rustc_session::generate_proc_macro_decls_symbol(stable_crate_id);
+     debug!("trying to dlsym proc_macros {} for symbol `{}`", path.display(), sym_name);
+ 
+     unsafe {
+         // FIXME(bjorn3) this depends on the unstable slice memory layout
+-        let result = crate::load_symbol_from_dylib::<*const &[ProcMacroClient]>(path, &sym_name);
++        let result = load_symbol_from_dylib::<*const &[ProcMacroClient]>(path, &sym_name);
+         match result {
+             Ok(result) => {
+                 debug!("loaded dlsym proc_macros {} for symbol `{}`", path.display(), sym_name);
+-                Ok(*result)
++                Ok((*result)
++                    .iter()
++                    .map(|proc_macro| IntoDynSyncSend(proc_macro.into_dyn_client()))
++                    .collect())
+             }
+             Err(err) => {
+                 debug!("failed to dlsym proc_macros {} for symbol `{}`", path.display(), sym_name);
+diff --git a/compiler/rustc_metadata/src/locator.rs b/compiler/rustc_metadata/src/locator.rs
+index 38da6561e..aa92b45aa 100644
+--- a/compiler/rustc_metadata/src/locator.rs
++++ b/compiler/rustc_metadata/src/locator.rs
+@@ -223,9 +223,10 @@
+ use rustc_data_structures::memmap::Mmap;
+ use rustc_data_structures::owned_slice::{OwnedSlice, slice_owned};
+ use rustc_data_structures::svh::Svh;
++use rustc_data_structures::sync::IntoDynSyncSend;
+ use rustc_errors::{DiagArgValue, IntoDiagArg};
+ use rustc_fs_util::try_canonicalize;
+-use rustc_proc_macro::bridge::client::Client as ProcMacroClient;
++use rustc_proc_macro::bridge::server::DynClient;
+ use rustc_session::filesearch::FileSearch;
+ use rustc_session::search_paths::PathKind;
+ use rustc_session::utils::CanonicalizedPath;
+@@ -987,7 +988,7 @@ pub fn get_proc_macros(
+     path: &Path,
+     metadata_loader: &dyn MetadataLoader,
+     cfg_version: &'static str,
+-) -> IoResult<Vec<(ProcMacroClient, ProcMacroKind)>> {
++) -> IoResult<Vec<(IntoDynSyncSend<DynClient>, ProcMacroKind)>> {
+     let host_tuple = TargetTuple::from_tuple(config::host_tuple());
+     let (host, _) = Target::search(&host_tuple, Path::new(""), false).unwrap();
+ 
+@@ -1004,7 +1005,7 @@ pub fn get_proc_macros(
+     let proc_macro_info = metadata.get_proc_macro_info();
+     assert_eq!(proc_macro_info.len(), clients.len());
+ 
+-    Ok(clients.into_iter().copied().zip(proc_macro_info).collect())
++    Ok(clients.into_iter().zip(proc_macro_info).collect())
+ }
+ 
+ // ------------------------------------------ Error reporting -------------------------------------
+diff --git a/compiler/rustc_metadata/src/rmeta/decoder.rs b/compiler/rustc_metadata/src/rmeta/decoder.rs
+index f68cfcc0d..9d019fdb8 100644
+--- a/compiler/rustc_metadata/src/rmeta/decoder.rs
++++ b/compiler/rustc_metadata/src/rmeta/decoder.rs
+@@ -13,7 +13,7 @@
+ use rustc_data_structures::fingerprint::Fingerprint;
+ use rustc_data_structures::fx::FxIndexMap;
+ use rustc_data_structures::owned_slice::OwnedSlice;
+-use rustc_data_structures::sync::Lock;
++use rustc_data_structures::sync::{IntoDynSyncSend, Lock};
+ use rustc_data_structures::unhash::UnhashMap;
+ use rustc_expand::base::{SyntaxExtension, SyntaxExtensionKind};
+ use rustc_expand::proc_macro::{AttrProcMacro, BangProcMacro, DeriveProcMacro};
+@@ -26,7 +26,7 @@
+ use rustc_middle::mir::interpret::{AllocDecodingSession, AllocDecodingState};
+ use rustc_middle::ty::codec::{TyDecoder, forward_all_decoder_methods_to};
+ use rustc_middle::ty::{RestrictionKind, Visibility};
+-use rustc_proc_macro::bridge::client::Client as ProcMacroClient;
++use rustc_proc_macro::bridge::server::DynClient;
+ use rustc_serialize::opaque::MemDecoder;
+ use rustc_serialize::{Decodable, Decoder};
+ use rustc_session::config::TargetModifier;
+@@ -114,7 +114,7 @@ pub(crate) struct CrateMetadata {
+     /// as it is from external crate.
+     incoherent_impls: FxIndexMap<SimplifiedType, LazyArray<LocalDefId>>,
+     /// Proc macro function pointers for this crate, if it's a proc macro crate.
+-    raw_proc_macros: Option<&'static [ProcMacroClient]>,
++    raw_proc_macros: Option<Vec<IntoDynSyncSend<DynClient>>>,
+     /// Source maps for code from the crate.
+     source_map_import_info: Lock<Vec<Option<ImportedSourceFile>>>,
+     /// For every definition in this crate, maps its `DefPathHash` to its `DefIndex`.
+@@ -1030,7 +1030,11 @@ fn missing(&self, descr: &str, id: DefIndex) -> ! {
+         bug!("missing `{descr}` for {:?}", self.local_def_id(id))
+     }
+ 
+-    fn raw_proc_macro(&self, tcx: TyCtxt<'_>, id: DefIndex) -> (ProcMacroClient, ProcMacroKind) {
++    fn raw_proc_macro(
++        &self,
++        tcx: TyCtxt<'_>,
++        id: DefIndex,
++    ) -> (IntoDynSyncSend<DynClient>, ProcMacroKind) {
+         // DefIndex's in root.proc_macro_data have a one-to-one correspondence
+         // with items in 'raw_proc_macros'.
+         let (pos, (_id, kind)) = self
+@@ -1043,7 +1047,7 @@ fn raw_proc_macro(&self, tcx: TyCtxt<'_>, id: DefIndex) -> (ProcMacroClient, Pro
+             .enumerate()
+             .find(|(_pos, (i, _))| i.local_def_index == id)
+             .unwrap();
+-        (self.raw_proc_macros.unwrap()[pos], kind.decode((self, tcx)))
++        (self.raw_proc_macros.as_ref().unwrap()[pos].clone(), kind.decode((self, tcx)))
+     }
+ 
+     fn opt_item_name(&self, item_index: DefIndex) -> Option<Symbol> {
+@@ -1980,7 +1984,7 @@ pub(crate) fn new(
+         blob: MetadataBlob,
+         root: CrateRoot,
+         unhashed: CrateRootUnhashed,
+-        raw_proc_macros: Option<&'static [ProcMacroClient]>,
++        raw_proc_macros: Option<Vec<IntoDynSyncSend<DynClient>>>,
+         cnum: CrateNum,
+         cnum_map: CrateNumMap,
+         dep_kind: CrateDepKind,
+diff --git a/library/proc_macro/src/bridge/closure.rs b/library/proc_macro/src/bridge/closure.rs
+index 88c4dd663..56e06b943 100644
+--- a/library/proc_macro/src/bridge/closure.rs
++++ b/library/proc_macro/src/bridge/closure.rs
+@@ -5,7 +5,7 @@
+ use super::Buffer;
+ 
+ #[repr(C)]
+-pub(super) struct Closure<'a> {
++pub struct Closure<'a> {
+     call: extern "C" fn(*mut Env, Buffer) -> Buffer,
+     env: *mut Env,
+     // Prevent Send and Sync impls.
+@@ -26,7 +26,7 @@ extern "C" fn call<F: FnMut(Buffer) -> Buffer>(env: *mut Env, arg: Buffer) -> Bu
+ }
+ 
+ impl<'a> Closure<'a> {
+-    pub(super) fn call(&mut self, arg: Buffer) -> Buffer {
++    pub fn call(&mut self, arg: Buffer) -> Buffer {
+         (self.call)(self.env, arg)
+     }
+ }
+diff --git a/library/proc_macro/src/bridge/mod.rs b/library/proc_macro/src/bridge/mod.rs
+index 4b12ed005..12357e670 100644
+--- a/library/proc_macro/src/bridge/mod.rs
++++ b/library/proc_macro/src/bridge/mod.rs
+@@ -108,6 +108,7 @@ fn ts_into_trees(
+ mod symbol;
+ 
+ use buffer::Buffer;
++pub use closure::Closure;
+ pub use panic_message::PanicMessage;
+ use rpc::{Decode, Encode};
+ 
+@@ -119,13 +120,13 @@ fn ts_into_trees(
+ #[repr(C)]
+ pub struct BridgeConfig<'a> {
+     /// Buffer used to pass initial input to the client.
+-    input: Buffer,
++    pub input: Buffer,
+ 
+     /// Server-side function that the client uses to make requests.
+-    dispatch: closure::Closure<'a>,
++    pub dispatch: closure::Closure<'a>,
+ 
+     /// If 'true', always invoke the default panic hook
+-    force_show_panics: bool,
++    pub force_show_panics: bool,
+ }
+ 
+ impl !Send for BridgeConfig<'_> {}
+diff --git a/library/proc_macro/src/bridge/server.rs b/library/proc_macro/src/bridge/server.rs
+index ff525c6cd..55b849617 100644
+--- a/library/proc_macro/src/bridge/server.rs
++++ b/library/proc_macro/src/bridge/server.rs
+@@ -4,7 +4,7 @@
+ use std::hash::Hash;
+ use std::ops::{Bound, Range};
+ use std::sync::atomic::AtomicU32;
+-use std::sync::mpsc;
++use std::sync::{Arc, mpsc};
+ use std::{panic, thread};
+ 
+ use crate::bridge::{
+@@ -139,7 +139,7 @@ fn run_bridge_and_client(
+         &self,
+         dispatcher: &mut Dispatcher<impl Server>,
+         input: Buffer,
+-        run_client: extern "C" fn(BridgeConfig<'_>) -> Buffer,
++        run_client: &(dyn Fn(BridgeConfig<'_>) -> Buffer + Sync),
+         force_show_panics: bool,
+     ) -> Buffer;
+ }
+@@ -188,30 +188,32 @@ fn run_bridge_and_client(
+         &self,
+         dispatcher: &mut Dispatcher<impl Server>,
+         input: Buffer,
+-        run_client: extern "C" fn(BridgeConfig<'_>) -> Buffer,
++        run_client: &(dyn Fn(BridgeConfig<'_>) -> Buffer + Sync),
+         force_show_panics: bool,
+     ) -> Buffer {
+         if self.cross_thread || ALREADY_RUNNING_SAME_THREAD.get() {
+             let (mut server, mut client) = MessagePipe::new();
+ 
+-            let join_handle = thread::spawn(move || {
+-                let mut dispatch = |b: Buffer| -> Buffer {
+-                    client.send(b);
+-                    client.recv().expect("server died while client waiting for reply")
+-                };
+-
+-                run_client(BridgeConfig {
+-                    input,
+-                    dispatch: (&mut dispatch).into(),
+-                    force_show_panics,
+-                })
+-            });
+-
+-            while let Some(b) = server.recv() {
+-                server.send(dispatcher.dispatch(b));
+-            }
++            thread::scope(|scope| {
++                let join_handle = scope.spawn(move || {
++                    let mut dispatch = |b: Buffer| -> Buffer {
++                        client.send(b);
++                        client.recv().expect("server died while client waiting for reply")
++                    };
++
++                    run_client(BridgeConfig {
++                        input,
++                        dispatch: (&mut dispatch).into(),
++                        force_show_panics,
++                    })
++                });
++
++                while let Some(b) = server.recv() {
++                    server.send(dispatcher.dispatch(b));
++                }
+ 
+-            join_handle.join().unwrap()
++                join_handle.join().unwrap()
++            })
+         } else {
+             let _guard = RunningSameThreadGuard::new();
+ 
+@@ -258,7 +260,7 @@ fn run_server<
+     strategy: &impl ExecutionStrategy,
+     server: S,
+     input: I,
+-    run_client: extern "C" fn(BridgeConfig<'_>) -> Buffer,
++    run_client: &(dyn Fn(BridgeConfig<'_>) -> Buffer + Sync),
+     force_show_panics: bool,
+ ) -> Result<O, PanicMessage> {
+     let mut dispatcher = Dispatcher { handle_store: HandleStore::new(), server };
+@@ -274,7 +276,18 @@ fn run_server<
+     Result::decode(&mut &buf[..], &mut dispatcher.handle_store)
+ }
+ 
++#[derive(Clone)]
++pub struct DynClient {
++    pub run: Arc<dyn Fn(BridgeConfig<'_>) -> Buffer + Send + Sync>,
++}
++
+ impl client::Client {
++    pub fn into_dyn_client(self) -> DynClient {
++        DynClient { run: Arc::new(move |config| (self.run)(config)) }
++    }
++}
++
++impl DynClient {
+     pub fn run1<S>(
+         &self,
+         strategy: &impl ExecutionStrategy,
+@@ -285,8 +298,8 @@ pub fn run1<S>(
+     where
+         S: Server,
+     {
+-        let client::Client { run } = *self;
+-        run_server(strategy, server, <MarkedTokenStream<S>>::mark(input), run, force_show_panics)
++        let DynClient { run } = self;
++        run_server(strategy, server, <MarkedTokenStream<S>>::mark(input), &**run, force_show_panics)
+             .map(|s| <Option<MarkedTokenStream<S>>>::unmark(s).unwrap_or_default())
+     }
+ 
+@@ -301,12 +314,12 @@ pub fn run2<S>(
+     where
+         S: Server,
+     {
+-        let client::Client { run } = *self;
++        let DynClient { run } = self;
+         run_server(
+             strategy,
+             server,
+             (<MarkedTokenStream<S>>::mark(input), <MarkedTokenStream<S>>::mark(input2)),
+-            run,
++            &**run,
+             force_show_panics,
+         )
+         .map(|s| <Option<MarkedTokenStream<S>>>::unmark(s).unwrap_or_default())
+diff --git a/src/tools/rust-analyzer/crates/proc-macro-srv/src/dylib/proc_macros.rs b/src/tools/rust-analyzer/crates/proc-macro-srv/src/dylib/proc_macros.rs
+index 4976298d5..d6823d8ce 100644
+--- a/src/tools/rust-analyzer/crates/proc-macro-srv/src/dylib/proc_macros.rs
++++ b/src/tools/rust-analyzer/crates/proc-macro-srv/src/dylib/proc_macros.rs
+@@ -2,6 +2,7 @@
+ use crate::{
+     ProcMacroClientHandle, ProcMacroKind, ProcMacroSrvSpan, TrackedEnv, token_stream::TokenStream,
+ };
++use rustc_data_structures::sync::IntoDynSyncSend;
+ use rustc_proc_macro::bridge;
+ 
+ impl From<bridge::PanicMessage> for crate::PanicMessage {
+@@ -10,11 +11,13 @@ fn from(p: bridge::PanicMessage) -> Self {
+     }
+ }
+ 
+-pub(crate) struct ProcMacros(Vec<(bridge::client::Client, rustc_metadata::ProcMacroKind)>);
++pub(crate) struct ProcMacros(
++    Vec<(IntoDynSyncSend<bridge::server::DynClient>, rustc_metadata::ProcMacroKind)>,
++);
+ 
+ impl ProcMacros {
+     pub(super) fn new(
+-        macros: Vec<(bridge::client::Client, rustc_metadata::ProcMacroKind)>,
++        macros: Vec<(IntoDynSyncSend<bridge::server::DynClient>, rustc_metadata::ProcMacroKind)>,
+     ) -> Self {
+         ProcMacros(macros)
+     }
+diff --git a/src/tools/rust-analyzer/crates/proc-macro-srv/src/lib.rs b/src/tools/rust-analyzer/crates/proc-macro-srv/src/lib.rs
+index e38d2ac11..2ed3763a6 100644
+--- a/src/tools/rust-analyzer/crates/proc-macro-srv/src/lib.rs
++++ b/src/tools/rust-analyzer/crates/proc-macro-srv/src/lib.rs
+@@ -16,6 +16,7 @@
+ #![cfg_attr(test, expect(unreachable_pub))]
+ 
+ extern crate rustc_codegen_ssa;
++extern crate rustc_data_structures;
+ extern crate rustc_driver as _;
+ extern crate rustc_interface;
+ extern crate rustc_lexer;
+-- 
+2.39.5 (Apple Git-154)
+

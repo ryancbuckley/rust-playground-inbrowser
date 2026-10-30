@@ -1,0 +1,24 @@
+From 7c791f6a10d9df924a8500e1c87150345f547b28 Mon Sep 17 00:00:00 2001
+From: bjorn3 <17426603+bjorn3@users.noreply.github.com>
+Date: Wed, 12 Aug 2026 12:12:30 +0200
+Subject: [PATCH] Show wasm proc-macro panic messages
+
+---
+ library/proc_macro/src/bridge/client.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/library/proc_macro/src/bridge/client.rs b/library/proc_macro/src/bridge/client.rs
+index b56712c8b..090797167 100644
+--- a/library/proc_macro/src/bridge/client.rs
++++ b/library/proc_macro/src/bridge/client.rs
+@@ -347,6 +347,6 @@ fn __rustc_proc_macro_call_client(
+     Box::into_raw(Box::new(client(BridgeConfig {
+         input: input.take(),
+         dispatch,
+-        force_show_panics: false,
++        force_show_panics: true,
+     })))
+ }
+-- 
+2.39.5 (Apple Git-154)
+
