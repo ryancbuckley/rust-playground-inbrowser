@@ -279,29 +279,28 @@ async function run(req) {
   const { id, opt, edition, tests, color, clippy, env, timeoutMs, emit } = req;
   const crateType = req.crateType ?? "bin";
   await ready;
-  const freeCompiler = await takeCompiler();
-  // Every run ends with a done message, a cancelled one too.
-  if (cancelled.delete(id)) {
-    freeCompiler();
-    postMessage({ type: "done", id, stage: "compile", code: 137, ms: 0 });
-    return;
-  }
   const fs = kernel.fs;
   const dir = `/work/${id}`;
-  fs.mkdirp(dir);
-  const root = writeCrate(fs, dir, req);
   const outFile = `${dir}/out`;
   // Nothing more from a cancelled run, which may still be compiling.
   const out = (stream) => (b) => {
     if (!cancelled.has(id)) postMessage({ type: "output", id, stream, text: textOf(id, stream, b) });
   };
-
-  status("Compiling…");
-  let t0 = performance.now();
-  compiling = id;
-  const texts = req.files ? req.files.map((f) => f.content) : [req.source];
+  let t0;
   let code;
+  const freeCompiler = await takeCompiler();
   try {
+    // Every run ends with a done message, a cancelled one too.
+    if (cancelled.delete(id)) {
+      postMessage({ type: "done", id, stage: "compile", code: 137, ms: 0 });
+      return;
+    }
+    fs.mkdirp(dir);
+    const root = writeCrate(fs, dir, req);
+    status("Compiling…");
+    t0 = performance.now();
+    compiling = id;
+    const texts = req.files ? req.files.map((f) => f.content) : [req.source];
     const compile = kernel.spawn(rustc, {
       args: [
         "rustc", root, `--edition=${edition ?? "2024"}`, "--crate-name=playground",
@@ -384,23 +383,22 @@ async function run(req) {
 async function format(req) {
   const { id, source, files, edition } = req;
   await ready;
-  const freeCompiler = await takeCompiler();
-  if (cancelled.delete(id)) {
-    freeCompiler();
-    postMessage({ type: "done", id, stage: "compile", code: 137, ms: 0, runs: false });
-    return;
-  }
   const fs = kernel.fs;
   const dir = `/work/${id}`;
-  fs.mkdirp(dir);
-  const root = writeCrate(fs, dir, req);
   // rustfmt names files by the paths it was given: name them as in the crate.
   let messages = "";
   const collect = (b) => { messages += textOf(id, "compiler", b); };
-  status("Formatting…");
-  const t0 = performance.now();
-  let code;
+  let root, t0, code;
+  const freeCompiler = await takeCompiler();
   try {
+    if (cancelled.delete(id)) {
+      postMessage({ type: "done", id, stage: "compile", code: 137, ms: 0, runs: false });
+      return;
+    }
+    fs.mkdirp(dir);
+    root = writeCrate(fs, dir, req);
+    status("Formatting…");
+    t0 = performance.now();
     const proc = kernel.spawn(rustc, {
       args: ["rustfmt", `--edition=${edition ?? "2024"}`, root],
       // RUSTC_RUSTFMT: this rustc has rustfmt built in.
