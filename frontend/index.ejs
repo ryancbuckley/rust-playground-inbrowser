@@ -5,17 +5,30 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="A Rust playground that compiles and runs Rust entirely in your browser" />
     <title><%= htmlRspackPlugin.options.title %></title>
+    <!-- Installable to a phone's Home Screen: the page's own background tints
+         the browser and OS chrome around it, light or dark. -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e1e1db" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#444444" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Rust" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <!-- iOS ignores the manifest's icons for the Home Screen. -->
+    <link rel="apple-touch-icon" href="icons/icon-180.png" />
     <script>
       // Without the COOP and COEP headers (GitHub Pages cannot send them), a
       // service worker adds them (coi-sw.js): register it, and reload once it
       // is in control. If it is in control and the page is still not
-      // isolated, the toolchain says so instead of reloading again.
+      // isolated, the toolchain says so instead of reloading again. Later
+      // visits, with the worker in control, are pwa.ts's.
       (() => {
         const sw = navigator.serviceWorker;
         if (crossOriginIsolated || !isSecureContext || !sw || sw.controller) return;
         window.coiReloading = true;
         sw.addEventListener('controllerchange', () => location.reload());
-        sw.register('coi-sw.js').catch(() => {
+        // updateViaCache "none": GitHub Pages serves the worker with
+        // max-age=600, and a stale one pins the app to an old build.
+        sw.register('coi-sw.js', { updateViaCache: 'none' }).catch(() => {
           window.coiReloading = false;
         });
       })();

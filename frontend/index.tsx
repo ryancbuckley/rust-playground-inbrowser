@@ -35,6 +35,7 @@ import { useAppSelector } from './hooks';
 import { themeSelector } from './selectors';
 import { Theme } from './types';
 import { activateFile } from './reducers/files';
+import { requestPersistentStorage, watchServiceWorker } from './pwa';
 
 const store = configureStore(window);
 
@@ -89,6 +90,9 @@ toolchain.connect({
   error: (text) => store.dispatch(toolchainError(text)),
 });
 store.dispatch(performVersionLoad());
+
+watchServiceWorker();
+void requestPersistentStorage();
 
 window.rustPlayground = {
   setCode: code => {

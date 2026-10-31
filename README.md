@@ -81,6 +81,20 @@ site for any host, GitHub Pages included. A host that cannot send the
 COOP/COEP headers gets them from a service worker (`web/coi-sw.js`): on
 the first visit the page registers it and reloads once.
 
+There the playground is also an app to add to a phone's Home Screen
+(`web/manifest.webmanifest`), and works offline. The same worker keeps the
+page and the toolchain, 76 MB, and serves them cache first: what the first
+visit loads is kept as it passes, and the rest is fetched once the toolchain
+is ready. Crates are kept as programs use them, as in a browser tab.
+`build-pages.sh` stamps the worker with a hash of the site and the list of
+files to keep, so each deploy is a new worker: it fills a cache of its own
+in the background, and the page offers to reload into the new build rather
+than switching under a running page. GitHub Pages serves every file with
+`max-age=600`, the worker too; the page registers it with `updateViaCache:
+"none"`, so that a stale copy cannot pin an installed app to an old build.
+The icon is a crab of its own, not the Rust logo (a Rust Foundation
+trademark), drawn by `scripts/artwork/icon.py`.
+
 `node scripts/browser-test.mjs --example Threads` runs an example in headless
 Chrome and prints the output (`--source FILE` runs a file; `--action MIR`,
 `--tool Clippy`, `--mode release` and others are described at its top). In

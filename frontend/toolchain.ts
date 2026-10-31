@@ -83,6 +83,9 @@ export function connect(events: ToolchainEvents) {
       events.status(m.text);
     } else if (m.type === 'ready') {
       events.ready(m.crates);
+      // Now that it no longer competes with loading the toolchain, have the
+      // service worker keep the rest of the page for offline use (coi-sw.js).
+      navigator.serviceWorker?.controller?.postMessage({ type: 'precache' });
     } else if (m.type === 'crates') {
       const { type: _, ...status } = m;
       events.crates(status);

@@ -1,0 +1,29 @@
+/* The banner offering a new build (pwa.ts), in the app icon's colours. */
+.update {
+  display: flex;
+  position: fixed;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  left: 50%;
+  align-items: center;
+  gap: 12px;
+  transform: translateX(-50%);
+  z-index: 1000;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 30%);
+  border-radius: 6px;
+  background: #1b2636;
+  padding: 10px 10px 10px 16px;
+  max-width: calc(100vw - 32px);
+  color: #fff;
+  font-size: 14px;
+}
+
+.update button {
+  cursor: pointer;
+  border: 0;
+  border-radius: 4px;
+  background: #f06a2e;
+  padding: 6px 12px;
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+}
