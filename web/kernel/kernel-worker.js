@@ -18,6 +18,8 @@
 //       rustc.wasm. Its done message has the files, formatted.
 //   { type: "cancel", id }
 //       Stop run `id`: kill its compiler or program, whichever is running.
+//       (In Safari its compiler finishes, its output dropped: see
+//       KILL_COMPILERS.)
 //   { type: "download-crates" }  fetch all the crates into the browser's cache
 //   { type: "remove-crates" }    empty that cache
 // Messages to the page:
@@ -154,6 +156,24 @@ const decoders = new Map();
 const running = new Map();
 const cancelled = new Set();
 
+// One compiler runs at a time: a compile (or format) waits for the one
+// before it. In Safari a cancelled compile is not killed but finishes, its
+// output dropped, as if killed: a process killed while it runs wasm leaves
+// a thread there that Safari can neither stop nor free the memory of
+// (retireTimeout). Programs are still killed.
+const KILL_COMPILERS = !WEBKIT;
+const compilers = new WeakSet();
+let compilerFree = Promise.resolve();
+
+/** Wait for the compiler; returns the function that frees it. */
+async function takeCompiler() {
+  const before = compilerFree;
+  let free;
+  compilerFree = new Promise((resolve) => (free = resolve));
+  await before;
+  return free;
+}
+
 /** A crate is downloaded for the program being compiled: say so, as Cargo does. */
 function reportDownload(crate) {
   const [name, version] = crate.split(" ");
@@ -209,6 +229,10 @@ async function init() {
     // starts several threads, and starting them is a good part of its time.
     kernel = new Kernel({
       createWorker: createBrowserWorker, programs: { "wasm-ld": linker }, pool: THRIFTY ? 0 : 4,
+      // Safari neither stops a worker terminated while it runs wasm nor
+      // frees its memory: let a killed process's threads run on to their
+      // next system call, where they close themselves.
+      retireTimeout: WEBKIT ? null : 1000,
     });
     if (!THRIFTY) {
       kernel.keepWarm(compiler);
@@ -255,8 +279,10 @@ async function run(req) {
   const { id, opt, edition, tests, color, clippy, env, timeoutMs, emit } = req;
   const crateType = req.crateType ?? "bin";
   await ready;
+  const freeCompiler = await takeCompiler();
   // Every run ends with a done message, a cancelled one too.
   if (cancelled.delete(id)) {
+    freeCompiler();
     postMessage({ type: "done", id, stage: "compile", code: 137, ms: 0 });
     return;
   }
@@ -265,39 +291,50 @@ async function run(req) {
   fs.mkdirp(dir);
   const root = writeCrate(fs, dir, req);
   const outFile = `${dir}/out`;
-  const out = (stream) => (b) => postMessage({ type: "output", id, stream, text: textOf(id, stream, b) });
+  // Nothing more from a cancelled run, which may still be compiling.
+  const out = (stream) => (b) => {
+    if (!cancelled.has(id)) postMessage({ type: "output", id, stream, text: textOf(id, stream, b) });
+  };
 
   status("Compiling…");
   let t0 = performance.now();
   compiling = id;
   const texts = req.files ? req.files.map((f) => f.content) : [req.source];
-  const compile = kernel.spawn(rustc, {
-    args: [
-      "rustc", root, `--edition=${edition ?? "2024"}`, "--crate-name=playground",
-      ...(tests ? ["--test"] : [`--crate-type=${crateType}`]),
-      ...(EMIT_ARGS[emit] ?? []),
-      `--target=${TARGET}`, `--sysroot=${SYSROOT}`,
-      "-o", outFile, `-Copt-level=${opt ?? 0}`,
-      // Paths relative to the crate: src/main.rs.
-      `--remap-path-prefix=${dir}/=`,
-      // The target's C runtime and libc, passed by hand: this rustc's
-      // target spec does not allow -Clink-self-contained.
-      "-Clinker=wasm-ld", "-Clinker-flavor=wasm-ld",
-      `-Clink-arg=${SELF_CONTAINED}/crt1-command.o`, "-L", SELF_CONTAINED,
-      // Instead of the target's 1 GiB: the kernel decides what is reserved.
-      "-Clink-arg=--max-memory=4294967296",
-      `--color=${color === false ? "never" : "always"}`, "-Zthreads=1",
-      // The crates the program names. Their proc macros are wasm modules,
-      // which rustc runs in its interpreter.
-      ...(crates?.args(CRATES, texts) ?? []),
-    ],
-    // RUSTC_CLIPPY: this rustc has Clippy built in.
-    env: { RUST_BACKTRACE: "0", HOME: "/tmp", TMPDIR: "/tmp", ...(clippy ? { RUSTC_CLIPPY: "1" } : {}) },
-    stdout: out("compiler"),
-    stderr: out("compiler"),
-  });
-  running.set(id, compile);
-  const code = await compile.exited;
+  let code;
+  try {
+    const compile = kernel.spawn(rustc, {
+      args: [
+        "rustc", root, `--edition=${edition ?? "2024"}`, "--crate-name=playground",
+        ...(tests ? ["--test"] : [`--crate-type=${crateType}`]),
+        ...(EMIT_ARGS[emit] ?? []),
+        `--target=${TARGET}`, `--sysroot=${SYSROOT}`,
+        "-o", outFile, `-Copt-level=${opt ?? 0}`,
+        // Paths relative to the crate: src/main.rs.
+        `--remap-path-prefix=${dir}/=`,
+        // The target's C runtime and libc, passed by hand: this rustc's
+        // target spec does not allow -Clink-self-contained.
+        "-Clinker=wasm-ld", "-Clinker-flavor=wasm-ld",
+        `-Clink-arg=${SELF_CONTAINED}/crt1-command.o`, "-L", SELF_CONTAINED,
+        // Instead of the target's 1 GiB: the kernel decides what is reserved.
+        "-Clink-arg=--max-memory=4294967296",
+        `--color=${color === false ? "never" : "always"}`, "-Zthreads=1",
+        // The crates the program names. Their proc macros are wasm modules,
+        // which rustc runs in its interpreter.
+        ...(crates?.args(CRATES, texts) ?? []),
+      ],
+      // RUSTC_CLIPPY: this rustc has Clippy built in.
+      env: { RUST_BACKTRACE: "0", HOME: "/tmp", TMPDIR: "/tmp", ...(clippy ? { RUSTC_CLIPPY: "1" } : {}) },
+      stdout: out("compiler"),
+      stderr: out("compiler"),
+    });
+    compilers.add(compile);
+    running.set(id, compile);
+    code = await compile.exited;
+  } finally {
+    freeCompiler();
+  }
+  // Cancelled: as if killed, though in Safari it ran to its end.
+  if (cancelled.has(id)) code = 137;
   if (compiling === id) compiling = null;
   const built = fs.readFile(outFile);
   const output = emit && emit !== "metadata" && built ? new TextDecoder().decode(built) : undefined;
@@ -347,7 +384,9 @@ async function run(req) {
 async function format(req) {
   const { id, source, files, edition } = req;
   await ready;
+  const freeCompiler = await takeCompiler();
   if (cancelled.delete(id)) {
+    freeCompiler();
     postMessage({ type: "done", id, stage: "compile", code: 137, ms: 0, runs: false });
     return;
   }
@@ -360,17 +399,29 @@ async function format(req) {
   const collect = (b) => { messages += textOf(id, "compiler", b); };
   status("Formatting…");
   const t0 = performance.now();
-  const proc = kernel.spawn(rustc, {
-    args: ["rustfmt", `--edition=${edition ?? "2024"}`, root],
-    // RUSTC_RUSTFMT: this rustc has rustfmt built in.
-    env: { RUSTC_RUSTFMT: "1", HOME: "/tmp", TMPDIR: "/tmp" },
-    stdout: collect,
-    stderr: collect,
-  });
-  running.set(id, proc);
-  const code = await proc.exited;
+  let code;
+  try {
+    const proc = kernel.spawn(rustc, {
+      args: ["rustfmt", `--edition=${edition ?? "2024"}`, root],
+      // RUSTC_RUSTFMT: this rustc has rustfmt built in.
+      env: { RUSTC_RUSTFMT: "1", HOME: "/tmp", TMPDIR: "/tmp" },
+      stdout: collect,
+      stderr: collect,
+    });
+    compilers.add(proc);
+    running.set(id, proc);
+    code = await proc.exited;
+  } finally {
+    freeCompiler();
+  }
   running.delete(id);
-  cancelled.delete(id);
+  if (cancelled.delete(id)) {
+    // As if killed, though in Safari it ran to its end.
+    fs.remove(dir);
+    postMessage({ type: "done", id, stage: "compile", code: 137, ms: performance.now() - t0, runs: false });
+    status("Ready.");
+    return;
+  }
   if (messages) postMessage({ type: "output", id, stream: "compiler", text: messages.replaceAll(`${dir}/`, "") });
   const read = (name, original) => {
     const bytes = fs.readFile(`${dir}/${name}`);
@@ -408,7 +459,7 @@ onmessage = (e) => {
   } else if (m.type === "cancel") {
     cancelled.add(m.id);
     const proc = running.get(m.id);
-    if (proc) kernel.kill(proc);
+    if (proc && (KILL_COMPILERS || !compilers.has(proc))) kernel.kill(proc);
   }
 };
 

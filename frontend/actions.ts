@@ -1,5 +1,6 @@
 import { ThunkAction as ReduxThunkAction, UnknownAction } from '@reduxjs/toolkit';
 
+import { SharedFile } from './domain/shareLink';
 import { State } from './reducers';
 import { editSingleCode } from './reducers/code';
 import {
@@ -10,14 +11,17 @@ import {
   changePrimaryAction,
 } from './reducers/configuration';
 import * as files from './reducers/files';
+import { seenMultipleFiles } from './reducers/notifications';
 import { performCommonExecute } from './reducers/output/execute';
 import { performCompileToHirOnly } from './reducers/output/hir';
 import { performCompileToMirOnly } from './reducers/output/mir';
 import { navigateToHelp, navigateToIndex } from './reducers/page';
 import {
   activeFileHasMainFunctionSelector,
+  allowMultipleFiles,
   getCrateType,
   linearCodeSelector,
+  linearizeCode,
   runAsTest,
 } from './selectors';
 import {
@@ -103,14 +107,16 @@ export const performCompileToHir = performAndSwitchPrimaryAction(
 
 export function indexPageLoad({
   code,
+  files: sharedFiles = [],
   mode: modeString,
   edition: editionString,
 }: {
   code?: string;
+  files?: SharedFile[];
   mode?: string;
   edition?: string;
 }): ThunkAction {
-  return function (dispatch) {
+  return function (dispatch, getState) {
     const mode = parseMode(modeString) || Mode.Debug;
     let maybeEdition = parseEdition(editionString);
 
@@ -127,7 +133,21 @@ export function indexPageLoad({
 
     const edition = maybeEdition || Edition.Rust2024;
 
-    if (code) {
+    if (sharedFiles.length > 0) {
+      // A link from the multiple-file view opens in it, or as one file
+      // where that view is turned off (?features=false).
+      if (allowMultipleFiles(getState())) {
+        // Without a notice: the files are what the link is for, and the
+        // view shows them as they were shared. (Nor the one offering to
+        // stay in single file mode.)
+        dispatch(changeFileView(FileView.Multiple));
+        dispatch(files.initializeWithFiles(sharedFiles));
+        dispatch(seenMultipleFiles());
+      } else {
+        dispatch(changeFileViewAutomatically(FileView.Single));
+        dispatch(editCode(linearizeCode(sharedFiles)));
+      }
+    } else if (code) {
       dispatch(changeFileViewAutomatically(FileView.Single));
       dispatch(editCode(code));
     }

@@ -10,10 +10,10 @@ const DISABLED = -1.0;
 
 const initialState: State = {
   forced: false,
-  multifileThreshold: DISABLED,
+  multifileThreshold: ENABLED,
 };
 
-// No server sends thresholds here: features are off unless ?features=true.
+// No server sends thresholds here: features are on unless ?features=false.
 const slice = createSlice({
   name: 'featureFlags',
   initialState,

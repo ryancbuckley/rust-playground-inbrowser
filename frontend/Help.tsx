@@ -214,6 +214,13 @@ const Help: React.FC = () => {
           </p>
 
           <pre className={styles.code}><code>{linkExample}</code></pre>
+
+          <p>
+            For several files, give each in a <Code>file</Code> parameter
+            instead: its path (such as <Code>src/main.rs</Code>), a newline,
+            then its contents. The playground opens them in the multiple-file
+            view, as it does links shared from that view.
+          </p>
         </LinkableSection>
 
         <LinkableSection id="features-tests" header="Executing tests" level="h3">

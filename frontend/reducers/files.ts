@@ -92,6 +92,24 @@ const slice = createSlice({
       state.active = newFile.id;
     },
 
+    // Files with invalid or repeated names are left out.
+    initializeWithFiles: (state, action: PayloadAction<{ name: string; content: string }[]>) => {
+      const newFiles: File[] = [];
+      for (const { name, content } of action.payload) {
+        const names = newFiles.map((f) => f.name);
+        if (validateFilename(names, name) === null) {
+          newFiles.push(buildFile(state, name, content));
+        }
+      }
+
+      if (newFiles.length === 0) {
+        return;
+      }
+
+      state.files = newFiles;
+      state.active = selectActiveFile(newFiles);
+    },
+
     editActiveFile: (state, action: PayloadAction<string>) => {
       const file = state.files.find((f) => f.id === state.active);
       if (file) {
@@ -241,6 +259,7 @@ export const {
   deleteFileIds,
   editActiveFile,
   initializeWith,
+  initializeWithFiles,
   renameDirectory,
   renameFile,
 } = slice.actions;

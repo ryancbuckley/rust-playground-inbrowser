@@ -43,10 +43,10 @@ main.rs ──rustc.wasm──▶ CLIF ──clif-to-wasm──▶ wasm objects 
   Run, Build, Test, MIR, HIR, Clippy, Rustfmt and macro expansion, the Ace
   and Monaco editors, clickable diagnostics, Debug and Release, editions. It
   has no gists, channels, Miri, assembly or LLVM IR; Share makes a link with
-  the code in it. Auto-run, the run limit and Clippy's lints when running are
+  the code in it (each file separately, from the multiple-file view, which
+  the link then opens in). Auto-run, the run limit and Clippy's lints when running are
   in the advanced options.
-- **Clippy**: built into rustc.wasm rather than shipped as a separate
-  clippy-driver, which without dylibs would be a second copy of the compiler.
+- **Clippy**: built into rustc.wasm.
   Tools > Clippy, and running with Clippy's lints on (the default), set
   `RUSTC_CLIPPY`, and its lints join the compiler's warnings. It adds 2.5 MB
   to the download and no measurable compile time.
@@ -86,12 +86,14 @@ once the toolchain is loaded.
 2,716 that need no auxiliary crates, flags or special runtime) for
 wasm32-wasip1-threads twice, with LLVM and with cg_clif +
 clif-to-wasm. It runs both under the kernel and compares exit
-codes and stdout. Result on 2026-10-20: **2641 of the 2650** that LLVM compiles
-and runs pass. None of the 9 failures is a miscompile:
+codes and stdout. Result on 2026-10-30: **2640 of the 2650** that LLVM compiles
+and runs pass. None of the 10 failures is a miscompile:
 
 - 3 compare addresses of identical constants, which LLVM merges and cg_clif
   does not (`mir_misc_casts`, `mir_raw_fat_ptr`, `issue-33537`).
 - 3 print stack addresses or `argv[0]`, which legitimately differ.
+- 1 prints a `HashMap`, whose order is random, when it is not the one it
+  expects (`hashmap-debug-format`), so it passes or fails by chance.
 - 2 use externally implementable items (`eii/`), which cg_clif does not
   support yet.
 - 1 uses `#[link_section]`, which the wasm object writer does not support
@@ -118,6 +120,12 @@ nightly: build `vendor/cg_clif` (`cargo build --release`) and pass
 `-Zcodegen-backend=vendor/cg_clif/target/release/librustc_codegen_cranelift.dylib
 --target wasm32-wasip1-threads` to `rustc +nightly-2026-10-19`.
 
+For wild's wasm integration tests, `. tools/wild-test-env.sh` (from this
+directory) puts wasi-sdk's clang and wasm-ld and `tools/` on `PATH`, and
+points `WASI_SYSROOT` at `tools/wasi-sysroot-shim`, wasi-libc in the Debian
+layout the tests expect. They also need `tools/wasmtime`, which `setup.sh`
+does not download.
+
 ## Patches
 
 - `patches/rust`: bjorn3's `compile_rustc_for_wasm20` changes, rebased. The
@@ -126,17 +134,27 @@ nightly: build `vendor/cg_clif` (`cargo build --release`) and pass
   built with `panic=abort`), there is no dylib loading, and our cg_clif is
   in-tree. Then bjorn3's wasm proc-macro support (rust-lang/rust#157709),
   with a small built-in WASI in place of wasmi_wasi, which does not build for
-  a WASI host.
-- `patches/cg_clif`: the wasm target support. The in-tree cg_clif in
-  `patches/rust` contains the same change.
+  a WASI host. Then Clippy and rustfmt built into rustc for WASI hosts
+  (`RUSTC_CLIPPY`, `RUSTC_RUSTFMT`), a failed link reported as such rather
+  than as a missing linker, and the in-tree cg_clif kept in step with
+  `patches/cg_clif` and clif-to-wasm (upstream cg_clif's update to Cranelift
+  0.137 among them).
+- `patches/cg_clif`: the wasm target support, including imports from wasm
+  modules other than `env` (`#[link(wasm_import_module = "...")]`), on top
+  of upstream's update to Cranelift 0.137. The in-tree cg_clif in
+  `patches/rust` contains the same changes.
 - wild needs no patches: our fixes to its wasm port (the main thread's TLS
   with `--shared-memory`, wild-linker/wild#2838, and overridden weak data
   symbols) are upstream. `setup.sh` still applies anything in `patches/wild`.
 
 ## Limitations
 
-- One crate, `main.rs`: no Cargo, and only the prebuilt crates. A program
-  cannot define proc macros of its own.
+- One crate, with no Cargo: a program is `src/main.rs` (or `src/lib.rs`)
+  and the modules it declares, edited as one file or, with Config > Edit
+  files, as several. With both `main.rs` and `lib.rs`, only `main.rs` is
+  compiled, so it cannot `use` the library as it can on the Rust
+  Playground. Only the prebuilt crates are available, and a program cannot
+  define proc macros of its own.
 - tokio is built with `--cfg tokio_unstable` (its multi-threaded runtime is
   unstable on wasm), and parking_lot with its `nightly` feature (its thread
   parker on wasm needs it). There is no network.
@@ -144,9 +162,14 @@ nightly: build `vendor/cg_clif` (`cargo build --release`) and pass
   `panic=abort`), and a panicking program exits with a trap.
 - Functions the backend cannot compile yet become traps, with a compiler
   warning.
-- The downloads are large: rustc.wasm is about 128 MB uncompressed, and the
-  page downloads about 57 MB before it can compile. Crates come on top, as
+- The downloads are large: rustc.wasm is about 98 MB uncompressed (23 MB
+  gzipped), and the page downloads about 58 MB before it can compile. Crates come on top, as
   programs use them: a few MB each with their dependencies, 23 MB for tokio.
+- In Safari, an edit during a compile does not stop it: the next compile
+  waits for it to finish. Safari can neither stop a worker running wasm nor
+  free the memory it reserved, so stopping compiles would use up the page's
+  memory after a few dozen edits. Programs are still stopped, and each one
+  stopped while it computes keeps its memory until the tab is closed.
 
 ## License
 

@@ -14,7 +14,7 @@ mkdir -p web/dist
 pnpm() { npx --yes pnpm@11 "$@"; }
 (cd frontend && pnpm install --frozen-lockfile && pnpm run build:production)
 # Without their name sections (debugging names), gzipped: rustc.wasm goes from
-# about 120 MB to 20 MB. The kernel worker decompresses them as it downloads.
+# about 144 MB to 23 MB. The kernel worker decompresses them as it downloads.
 for m in "${RUSTC_WASM:-vendor/rust/build/wasm32-wasip1-threads/stage2/bin/rustc.wasm}" \
          vendor/wild/target/wasm32-wasip1-threads/release/wild.wasm; do
   name=$(basename "$m")

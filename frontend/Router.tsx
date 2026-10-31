@@ -8,6 +8,7 @@ import UssRouter from './uss-router/Router';
 import qs from 'qs';
 
 import * as actions from './actions';
+import { decodeFile } from './domain/shareLink';
 import { State } from './reducers';
 import { Edition, Mode, Page } from './types';
 
@@ -63,7 +64,13 @@ const locationToAction = (location: Location): PlainOrThunk<State, UnknownAction
     return actions.helpPageLoad();
   }
 
-  return actions.indexPageLoad(query);
+  // `file` is repeated, once for each file: read it in order, which qs
+  // does not promise for many of them.
+  const files = new URLSearchParams(location.search)
+    .getAll('file')
+    .flatMap((f) => decodeFile(f) ?? []);
+
+  return actions.indexPageLoad({ ...query, files });
 };
 
 export default class Router extends React.Component<RouterProps> {
