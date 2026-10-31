@@ -1,6 +1,8 @@
 # Rust in the Browser
 
-A Rust playground that compiles and runs Rust entirely in the browser:
+A Rust playground that compiles and runs Rust entirely in the browser. It is at https://ryancbuckley.github.io/rust-playground-inbrowser-site.
+
+The toolchain is:
 
 ```
 main.rs ──rustc.wasm──▶ CLIF ──clif-to-wasm──▶ wasm objects ──wild.wasm──▶ main.wasm ──▶ run
