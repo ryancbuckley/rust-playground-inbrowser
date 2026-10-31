@@ -175,6 +175,9 @@ does not download.
   free the memory it reserved, so stopping compiles would use up the page's
   memory after a few dozen edits. Programs are still stopped, and each one
   stopped while it computes keeps its memory until the tab is closed.
+- On phones, which give a page far less memory, the compiler may use up to
+  384 MiB (it needs 120 to 190 MiB for most programs, 260 for 2,500 lines),
+  the linker 128 MiB, and a program 256 MiB.
 
 ## License
 

@@ -133,15 +133,20 @@ const ua = self.navigator?.userAgent ?? "";
 const WEBKIT = /AppleWebKit/.test(ua) && !/Chrome\/|Chromium\//.test(ua);
 // Chrome says how much memory a device has, in GB (at most 8); Safari does not.
 const LOW_MEMORY = (self.navigator?.deviceMemory ?? 8) < 4;
+// Phones (iPads say they are Macs) have far less to go round: small limits
+// from the start, as the largest of a list, tried first, could leave the
+// linker and the program nothing.
+const MOBILE = /Android|iPhone|iPod|Mobi/.test(ua);
 // Where memory is scarce: no idle workers or prepared processes, which hold
 // memories of their own, and smaller limits.
-const THRIFTY = WEBKIT || LOW_MEMORY;
-// The compiler uses 100 to 300 MiB for most programs (220 for 2,500 lines),
-// the linker under 50.
-const RUSTC_MAX_PAGES = (THRIFTY ? [768, 512] : [1024, 512]).map((mib) => mib * MIB);
-const LINKER_MAX_PAGES = 256 * MIB;
+const THRIFTY = WEBKIT || LOW_MEMORY || MOBILE;
+const limits = (mobile, thrifty, roomy) => (MOBILE ? mobile : THRIFTY ? thrifty : roomy).map((mib) => mib * MIB);
+// The compiler uses 120 to 190 MiB for most programs (hello world to tokio;
+// 260 for 2,500 lines), the linker under 50, programs a few.
+const RUSTC_MAX_PAGES = limits([384, 256], [768, 512, 384, 256], [1024, 512]);
+const LINKER_MAX_PAGES = limits([128, 64], [256, 128, 64], [256]);
 // Programs are linked to allow all 4 GiB a 32-bit program can address.
-const PROGRAM_MAX_PAGES = (THRIFTY ? [1024, 512, 256] : [4096, 2048, 1024, 512]).map((mib) => mib * MIB);
+const PROGRAM_MAX_PAGES = limits([256, 128, 64], [1024, 512, 256, 128, 64], [4096, 2048, 1024, 512]);
 
 let kernel, rustc;
 /** The crates programs can use (crates.js), or null. */
