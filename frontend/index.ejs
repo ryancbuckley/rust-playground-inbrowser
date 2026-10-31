@@ -5,6 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="A Rust playground that compiles and runs Rust entirely in your browser" />
     <title><%= htmlRspackPlugin.options.title %></title>
+    <script>
+      // Without the COOP and COEP headers (GitHub Pages cannot send them), a
+      // service worker adds them (coi-sw.js): register it, and reload once it
+      // is in control. If it is in control and the page is still not
+      // isolated, the toolchain says so instead of reloading again.
+      (() => {
+        const sw = navigator.serviceWorker;
+        if (crossOriginIsolated || !isSecureContext || !sw || sw.controller) return;
+        window.coiReloading = true;
+        sw.addEventListener('controllerchange', () => location.reload());
+        sw.register('coi-sw.js').catch(() => {
+          window.coiReloading = false;
+        });
+      })();
+    </script>
   </head>
   <body>
     <main>

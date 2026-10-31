@@ -67,6 +67,8 @@ let nextId = 1;
 /** Start the worker, which starts loading the toolchain. */
 export function connect(events: ToolchainEvents) {
   if (!crossOriginIsolated) {
+    // About to reload under the service worker that isolates it (index.ejs).
+    if ((window as { coiReloading?: boolean }).coiReloading) return;
     events.error(
       'This page needs cross-origin isolation (the COOP and COEP headers) for SharedArrayBuffer. ' +
         'Serve it with web/serve.py.',

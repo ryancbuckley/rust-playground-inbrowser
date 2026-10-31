@@ -74,6 +74,11 @@ scripts/build-web.sh    # the page (frontend/) and the toolchain, into web/
 python3 web/serve.py    # http://127.0.0.1:8000/ (sends the COOP/COEP headers)
 ```
 
+`scripts/build-pages.sh` collects the page into `build/pages`, a static
+site for any host, GitHub Pages included. A host that cannot send the
+COOP/COEP headers gets them from a service worker (`web/coi-sw.js`): on
+the first visit the page registers it and reloads once.
+
 `node scripts/browser-test.mjs --example Threads` runs an example in headless
 Chrome and prints the output (`--source FILE` runs a file; `--action MIR`,
 `--tool Clippy`, `--mode release` and others are described at its top). In
