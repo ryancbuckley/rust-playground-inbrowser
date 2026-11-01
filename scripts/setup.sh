@@ -9,8 +9,8 @@
 #   tools/          wasi-sdk; wasm-tools (build-web.sh); wabt's wat2wasm (wild's
 #                   wasm tests)
 #
-# The wasm backend itself is ../clif_to_wasm, which the
-# compiler's cg_clif depends on by path.
+# The wasm backend itself is the clif-to-wasm crate, which the compiler's
+# cg_clif gets from crates.io.
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)

@@ -228,15 +228,13 @@ def components():
          "files": [ROOT / "LICENSE"]},
         {"name": "wasi-kernel", "version": kernel["version"], "url": "", "license": kernel["license"],
          "files": [ROOT / "web/wasi-kernel/LICENSE"]},
-        {"name": "clif-to-wasm", "version": "", "url": "", "license": "Apache-2.0 WITH LLVM-exception",
-         "files": [ROOT.parent / "clif_to_wasm/LICENSE"]},
     ]
     no_proc_macros = ["-e", "normal,no-proc-macro"]
     std = cargo_packages(RUST / "library", "-p", "sysroot", "-F", "backtrace,panic-unwind", *no_proc_macros)
     crates = [e for e in cargo_packages(ROOT / "crates", "-e", "normal") if e["name"] != "playground-crates"]
     return [
         ("playground", "This playground",
-         "The page, its WASI kernel, and clif-to-wasm (the wasm backend for Cranelift, inside rustc.wasm).",
+         "The page and its WASI kernel.",
          own),
         ("ui", "The interface",
          "The page's interface is the Rust Playground's, changed to compile in the browser. It is bundled "

@@ -14,7 +14,7 @@ main.rs ──rustc.wasm──▶ CLIF ──clif-to-wasm──▶ wasm objects 
   nightly-2026-10-19). Its codegen backend, rustc_codegen_cranelift, is linked in
   statically.
 - **cg_clif → wasm**: for wasm targets, cg_clif hands each function's CLIF to
-  [`clif-to-wasm`](../clif_to_wasm). That backend
+  [`clif-to-wasm`](https://crates.io/crates/clif-to-wasm). That backend
   writes relocatable wasm objects (tool-conventions `linking`/`reloc.*`) whose
   calling convention matches LLVM's, so they link against the standard
   library, which LLVM compiled.
@@ -64,8 +64,8 @@ everything is tested outside the browser.
 
 Requires macOS on arm64 (for the wasi-sdk download in `setup.sh`), rustup,
 Node 24.12 or later (with npx, which fetches pnpm 11), Python 3, and the
-sibling checkouts
-`../clif_to_wasm` and `../wasi-kernel`.
+sibling checkout `../wasi-kernel`. The wasm backend, clif-to-wasm, comes
+from crates.io.
 
 ```sh
 scripts/setup.sh        # fetch rust, cg_clif and wild at pinned commits + patches, tools

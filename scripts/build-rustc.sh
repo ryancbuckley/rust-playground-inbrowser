@@ -7,9 +7,7 @@
 # vendor/rust/dist/lib/rustlib/wasm32-wasip1-threads, and
 # vendor/rust/build/aarch64-apple-darwin/stage1 with the standard library for
 # the host, wasm32-wasip1-threads and wasm32-wasip1 (wasm proc macros).
-# `x.py install` stops at installing rustc: its generate-copyright fails on
-# clif-to-wasm, a path dependency outside the tree. The standard library is
-# installed by then, and rustc.wasm is taken from the build directory.
+# rustc.wasm is taken from the build directory.
 #
 # remap-debuginfo builds with cargo's -Ztrim-paths, so the panic locations and
 # metadata in rustc.wasm and the libraries name /rustc/1.101.0/... and
