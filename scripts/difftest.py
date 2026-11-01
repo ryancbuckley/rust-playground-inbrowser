@@ -14,11 +14,13 @@ import pathlib
 import random
 import re
 import subprocess
+import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 UI = ROOT / "vendor/rust/tests/ui"
-CG = ROOT / "vendor/cg_clif/target/release/librustc_codegen_cranelift.dylib"
+DYLIB = {"darwin": "lib{}.dylib", "win32": "{}.dll"}.get(sys.platform, "lib{}.so")
+CG = ROOT / "vendor/cg_clif/target/release" / DYLIB.format("rustc_codegen_cranelift")
 RUN = ROOT / "web/wasi-kernel/run.js"
 TOOLCHAIN = "+nightly-2026-10-19"
 SKIP = re.compile(r"aux-build|aux-crate|ignore-wasm|needs-unwind|ignore-emscripten|needs-subprocess|"

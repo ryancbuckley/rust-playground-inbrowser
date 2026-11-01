@@ -62,7 +62,8 @@ everything is tested outside the browser.
 
 ## Building
 
-Requires macOS on arm64 (for the wasi-sdk download in `setup.sh`), rustup,
+Runs on macOS or Linux, on arm64 or x86_64 (on Windows, use WSL); `setup.sh`
+downloads the wasi-sdk and tools for the machine it runs on. Requires rustup,
 Node 24.12 or later (with npx, which fetches pnpm 11), Python 3, and the
 sibling checkout `../wasi-kernel`. The wasm backend, clif-to-wasm, comes
 from crates.io.
@@ -139,7 +140,8 @@ node web/wasi-kernel/run.js --dir vendor/rust/dist=/sysroot --dir $PWD/work=/wor
 Natively, the same backend runs as a codegen backend dylib for a stock
 nightly: build `vendor/cg_clif` (`cargo build --release`) and pass
 `-Zcodegen-backend=vendor/cg_clif/target/release/librustc_codegen_cranelift.dylib
---target wasm32-wasip1-threads` to `rustc +nightly-2026-10-19`.
+--target wasm32-wasip1-threads` (`.so` instead of `.dylib` on Linux) to
+`rustc +nightly-2026-10-19`.
 
 For wild's wasm integration tests, `. tools/wild-test-env.sh` (from this
 directory) puts wasi-sdk's clang and wasm-ld and `tools/` on `PATH`, and

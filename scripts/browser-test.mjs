@@ -37,7 +37,11 @@ const action = opt("action", null);
 const tool = opt("tool", null);
 const autorun = args.includes("--autorun");
 const noClippy = args.includes("--no-clippy");
-const chrome = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+// Chrome, or set CHROME (Chromium works too).
+const chrome = process.env.CHROME ??
+  (process.platform === "darwin"
+    ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    : "google-chrome");
 
 const profile = mkdtempSync(join(tmpdir(), "playground-chrome-"));
 const proc = spawn(chrome, [

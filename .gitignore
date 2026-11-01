@@ -5,6 +5,7 @@
 /tools/wat2wasm
 /tools/dl-*/
 /tools/wasi-sdk-*/
+/tools/wasi-sdk
 # Build outputs
 /build/
 /web/dist/

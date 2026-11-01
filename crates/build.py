@@ -39,9 +39,12 @@ import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
-RUSTC = ROOT / "vendor/rust/build/aarch64-apple-darwin/stage1/bin/rustc"
+# This machine's target triple, which names bootstrap's build directory.
+HOST = re.search(r"^host: (\S+)", subprocess.run(
+    ["rustc", "+nightly-2026-10-19", "-vV"], capture_output=True, text=True, check=True).stdout, re.M)[1]
+RUSTC = ROOT / f"vendor/rust/build/{HOST}/stage1/bin/rustc"
 TARGET = "wasm32-wasip1-threads"
-WASI_SDK = ROOT / "tools/wasi-sdk-34.0-arm64-macos"
+WASI_SDK = (ROOT / "tools/wasi-sdk").resolve()  # setup.sh links the one for this machine
 WASM_LD = WASI_SDK / "bin/wasm-ld"
 OUT = ROOT / "web/dist/crates"
 

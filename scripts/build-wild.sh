@@ -4,7 +4,7 @@
 # paths on this machine.
 set -eu
 cd "$(dirname "$0")/../vendor/wild"
-W="$(cd ../../tools && pwd)/wasi-sdk-34.0-arm64-macos"
+W="$(cd ../../tools/wasi-sdk && pwd -P)"
 cargo build --release -p wild-linker
 CC_wasm32_wasip1_threads="$W/bin/clang" AR_wasm32_wasip1_threads="$W/bin/llvm-ar" \
   CFLAGS_wasm32_wasip1_threads="--sysroot=$W/share/wasi-sysroot" \
