@@ -216,7 +216,7 @@ def components():
         "license": "Apache-2.0 WITH LLVM-exception",
         "files": [RUST / "src/llvm-project/libunwind/LICENSE.TXT"],
     }
-    kernel = json.loads((ROOT / "web/wasi-kernel/package.json").read_text())
+    kernel = json.loads((ROOT / "web/browser-kernel/package.json").read_text())
     upstream = json.loads((UI / "package.json").read_text())["upstream"]
     rust_playground = {
         "name": "Rust Playground (its frontend, changed)", "version": upstream["commit"][:12],
@@ -226,8 +226,8 @@ def components():
     own = [
         {"name": "Rust in the Browser", "version": "", "url": "", "license": "Apache-2.0",
          "files": [ROOT / "LICENSE"]},
-        {"name": "wasi-kernel", "version": kernel["version"], "url": "", "license": kernel["license"],
-         "files": [ROOT / "web/wasi-kernel/LICENSE"]},
+        {"name": "browser-kernel", "version": kernel["version"], "url": "", "license": kernel["license"],
+         "files": [ROOT / "web/browser-kernel/LICENSE"]},
     ]
     no_proc_macros = ["-e", "normal,no-proc-macro"]
     std = cargo_packages(RUST / "library", "-p", "sysroot", "-F", "backtrace,panic-unwind", *no_proc_macros)

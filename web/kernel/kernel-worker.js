@@ -41,8 +41,8 @@
 // Diagnostics and panics name the files as Cargo would, src/main.rs, and
 // the crate is called playground, as on play.rust-lang.org.
 
-import { Kernel, OutOfMemoryError, importedMemory } from "../wasi-kernel/kernel.js";
-import { File } from "../wasi-kernel/fs.js";
+import { Kernel, OutOfMemoryError, importedMemory } from "../browser-kernel/kernel.js";
+import { File } from "../browser-kernel/fs.js";
 import { Crates } from "./crates.js";
 
 const SYSROOT = "/sysroot";
@@ -51,7 +51,7 @@ const SELF_CONTAINED = `${SYSROOT}/lib/rustlib/${TARGET}/lib/self-contained`;
 const CRATES = "/crates";
 
 function createBrowserWorker() {
-  const w = new Worker(new URL("../wasi-kernel/thread-worker.js", import.meta.url), { type: "module" });
+  const w = new Worker(new URL("../browser-kernel/thread-worker.js", import.meta.url), { type: "module" });
   return {
     postMessage: (m) => w.postMessage(m),
     onMessage: (f) => { w.onmessage = (e) => f(e.data); },

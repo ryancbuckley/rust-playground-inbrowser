@@ -21,7 +21,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 UI = ROOT / "vendor/rust/tests/ui"
 DYLIB = {"darwin": "lib{}.dylib", "win32": "{}.dll"}.get(sys.platform, "lib{}.so")
 CG = ROOT / "vendor/cg_clif/target/release" / DYLIB.format("rustc_codegen_cranelift")
-RUN = ROOT / "web/wasi-kernel/run.js"
+RUN = ROOT / "web/browser-kernel/run.js"
 TOOLCHAIN = "+nightly-2026-10-19"
 SKIP = re.compile(r"aux-build|aux-crate|ignore-wasm|needs-unwind|ignore-emscripten|needs-subprocess|"
                   r"proc-macro|only-|needs-threads|ignore-wasi|revisions|exec-env|run-flags|"

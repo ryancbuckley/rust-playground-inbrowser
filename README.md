@@ -26,7 +26,7 @@ inside the browser on a small WASI kernel:
 - **`wild.wasm`**: the [Wild](https://github.com/wild-linker/wild) linker,
   compiled to WebAssembly. Because WASI has no `fork`/`exec`, `rustc` invokes
   the linker through a host import (`playground.spawn`).
-- **WASI kernel ([`wasi-kernel`](../wasi-kernel), linked as `web/wasi-kernel`)**:
+- **WASI kernel ([`browser-kernel`](../browser-kernel), linked as `web/browser-kernel`)**:
   a browser WASI preview1 + `wasi-threads` runtime. A dedicated Web Worker
   (`web/kernel/kernel-worker.js`) owns an in-memory filesystem and services
   synchronous system calls over a `SharedArrayBuffer`. Each wasm thread runs in
@@ -63,7 +63,7 @@ runs in about 0.3 seconds, and a multi-threaded example takes about 0.5 seconds.
 
 Building requires macOS or Linux on `x86_64` or `arm64` (use WSL on Windows),
 `rustup`, Node 24.12+ (with `npx`, which fetches `pnpm` 11), Python 3, and the
-sibling [`../wasi-kernel`](../wasi-kernel) checkout. `scripts/setup.sh`
+sibling [`../browser-kernel`](../browser-kernel) checkout. `scripts/setup.sh`
 downloads `wasi-sdk` and other prebuilt tools for the host platform.
 
 ```sh
@@ -126,15 +126,15 @@ Of the 2,650 tests that compile and run with LLVM, **2,640 pass** with
 
 ### Running under Node (without a browser)
 
-The same WASI kernel runs under Node via `web/wasi-kernel/run.js`:
+The same WASI kernel runs under Node via `web/browser-kernel/run.js`:
 
 ```sh
 # Run any wasm32-wasip1-threads binary:
-node web/wasi-kernel/run.js program.wasm args...
+node web/browser-kernel/run.js program.wasm args...
 
 # Compile main.rs with rustc.wasm and link with wild.wasm under Node:
 SC=/sysroot/lib/rustlib/wasm32-wasip1-threads/lib/self-contained
-node web/wasi-kernel/run.js --dir vendor/rust/dist=/sysroot --dir $PWD/work=/work \
+node web/browser-kernel/run.js --dir vendor/rust/dist=/sysroot --dir $PWD/work=/work \
   --program wasm-ld=vendor/wild/target/wasm32-wasip1-threads/release/wild.wasm \
   --save /work/main.wasm=work/main.wasm \
   vendor/rust/build/wasm32-wasip1-threads/stage2/bin/rustc.wasm /work/main.rs \

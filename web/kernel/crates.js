@@ -9,7 +9,7 @@
 // import to suggest for a name it cannot resolve. So a program is only given
 // the crates it names: a program can only use a crate by naming it.
 
-import { File } from "../wasi-kernel/fs.js";
+import { File } from "../browser-kernel/fs.js";
 
 const BASE = new URL("../dist/crates/", import.meta.url);
 const CACHE = "crates";

@@ -2,7 +2,7 @@
 # The page, built by build-web.sh, as a static site for a host that cannot
 # send the COOP and COEP headers, such as GitHub Pages (web/coi-sw.js adds
 # them), installable as an app that works offline: into build/pages, with
-# the kernel's files copied in instead of the web/wasi-kernel link.
+# the kernel's files copied in instead of the web/browser-kernel link.
 #
 # The service worker is stamped on the way: CACHE gets a hash of the site's
 # files and SHELL the list of them (but the crates, which crates.js caches as
@@ -12,10 +12,10 @@ set -eu
 cd "$(dirname "$0")/.."
 test -f web/index.html || { echo "build the page first: scripts/build-web.sh" >&2; exit 1; }
 rm -rf build/pages
-mkdir -p build/pages/wasi-kernel
+mkdir -p build/pages/browser-kernel
 cp -R web/index.html web/coi-sw.js web/manifest.webmanifest web/icons web/dist web/kernel build/pages/
 for f in kernel.js fs.js thread-worker.js LICENSE; do
-  cp "web/wasi-kernel/$f" build/pages/wasi-kernel/
+  cp "web/browser-kernel/$f" build/pages/browser-kernel/
 done
 # Served as they are, without Jekyll.
 touch build/pages/.nojekyll
