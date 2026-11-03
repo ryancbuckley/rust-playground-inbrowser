@@ -78,7 +78,11 @@ python3 web/serve.py    # serve at http://127.0.0.1:8000/ with COOP/COEP headers
 ### Static site deployment and offline PWA
 
 `scripts/build-pages.sh` packages the site into `build/pages`, ready for any
-static host (including GitHub Pages):
+static host (including GitHub Pages). `scripts/deploy-pages.sh` publishes it to
+the `main` branch of
+[rust-playground-inbrowser-site](https://github.com/ryancbuckley/rust-playground-inbrowser-site),
+which GitHub Pages serves, as a single commit that replaces the last deploy (so
+that repository doesn't collect every version of the toolchain):
 
 - **Cross-origin isolation**: Shared WebAssembly memory requires `COOP`/`COEP`
   HTTP headers. On hosts like GitHub Pages that cannot set custom response
