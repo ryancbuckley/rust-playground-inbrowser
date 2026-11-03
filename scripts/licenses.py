@@ -226,7 +226,7 @@ def components():
     own = [
         {"name": "Rust in the Browser", "version": "", "url": "", "license": "Apache-2.0",
          "files": [ROOT / "LICENSE"]},
-        {"name": "browser-kernel", "version": kernel["version"], "url": "", "license": kernel["license"],
+        {"name": "browser-kernel", "version": kernel["version"], "url": "https://github.com/ryancbuckley/browser-kernel", "license": kernel["license"],
          "files": [ROOT / "web/browser-kernel/LICENSE"]},
     ]
     no_proc_macros = ["-e", "normal,no-proc-macro"]

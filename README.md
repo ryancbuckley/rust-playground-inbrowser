@@ -26,7 +26,7 @@ inside the browser on a small WASI kernel:
 - **`wild.wasm`**: the [Wild](https://github.com/wild-linker/wild) linker,
   compiled to WebAssembly. Because WASI has no `fork`/`exec`, `rustc` invokes
   the linker through a host import (`playground.spawn`).
-- **WASI kernel ([`browser-kernel`](../browser-kernel), linked as `web/browser-kernel`)**:
+- **WASI kernel ([`browser-kernel`](https://github.com/ryancbuckley/browser-kernel), linked as `web/browser-kernel`)**:
   a browser WASI preview1 + `wasi-threads` runtime. A dedicated Web Worker
   (`web/kernel/kernel-worker.js`) owns an in-memory filesystem and services
   synchronous system calls over a `SharedArrayBuffer`. Each wasm thread runs in
@@ -63,7 +63,7 @@ runs in about 0.3 seconds, and a multi-threaded example takes about 0.5 seconds.
 
 Building requires macOS or Linux on `x86_64` or `arm64` (use WSL on Windows),
 `rustup`, Node 24.12+ (with `npx`, which fetches `pnpm` 11), Python 3, and the
-sibling [`../browser-kernel`](../browser-kernel) checkout. `scripts/setup.sh`
+[`browser-kernel`](https://github.com/ryancbuckley/browser-kernel) checked out beside this repository, as `../browser-kernel`. `scripts/setup.sh`
 downloads `wasi-sdk` and other prebuilt tools for the host platform.
 
 ```sh
