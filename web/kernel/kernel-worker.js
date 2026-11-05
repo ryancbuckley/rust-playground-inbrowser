@@ -313,6 +313,10 @@ async function run(req) {
         ...(EMIT_ARGS[emit] ?? []),
         `--target=${TARGET}`, `--sysroot=${SYSROOT}`,
         "-o", outFile, `-Copt-level=${opt ?? 0}`,
+        // Debug builds trap when a thread outgrows its stack, instead of
+        // writing over the heap below it (wasm has no guard pages). The
+        // check costs a little in each function with a stack frame.
+        ...(opt ? [] : ["-Cllvm-args=wasm-stack-limit"]),
         // Paths relative to the crate: src/main.rs.
         `--remap-path-prefix=${dir}/=`,
         // The target's C runtime and libc, passed by hand: this rustc's

@@ -1,0 +1,111 @@
+From 92ca9f689a10ab973b00b44702a6239001fb8284 Mon Sep 17 00:00:00 2001
+From: Ryan Buckley <10402042+ryancbuckley@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 22:57:29 -0500
+Subject: [PATCH] cg_clif: wasm stack limit checks
+ (-Cllvm-args=wasm-stack-limit)
+
+With the option, functions with a stack frame check it against the
+__stack_limit global (which std defines on WASI) and trap instead of
+writing below the limit. Needs clif-to-wasm 0.2.0, whose ObjectOptions
+is non-exhaustive.
+---
+ Cargo.lock                                    |  4 +--
+ compiler/rustc_codegen_cranelift/Cargo.toml   |  2 +-
+ .../rustc_codegen_cranelift/src/config.rs     |  2 ++
+ compiler/rustc_codegen_cranelift/src/wasm.rs  | 33 ++++++++++---------
+ 4 files changed, 22 insertions(+), 19 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index e288f5a04..bd76b461d 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -668,9 +668,9 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
+ 
+ [[package]]
+ name = "clif-to-wasm"
+-version = "0.1.0"
++version = "0.2.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "fff0036eb599a0e45e7f528fb5d03c3d2c4a5d89cab9031ff249228ea6c6e0ce"
++checksum = "90277e3d2102c5e934936a1924e2815da705c2f46c44f9fb9d4ab2b18f46c704"
+ dependencies = [
+  "cranelift-codegen",
+  "cranelift-module",
+diff --git a/compiler/rustc_codegen_cranelift/Cargo.toml b/compiler/rustc_codegen_cranelift/Cargo.toml
+index 57a780abe..6797a61d7 100644
+--- a/compiler/rustc_codegen_cranelift/Cargo.toml
++++ b/compiler/rustc_codegen_cranelift/Cargo.toml
+@@ -23,7 +23,7 @@ object = { version = "0.40.0", default-features = false, features = ["std", "rea
+ indexmap = "2.0.0"
+ libloading = { version = "0.9.0", optional = true }
+ smallvec = "1.8.1"
+-clif-to-wasm = { version = "0.1.0", features = ["module"] }
++clif-to-wasm = { version = "0.2.0", features = ["module"] }
+ 
+ # As a member of the rustc workspace, use the compiler crates directly.
+ rustc_abi = { path = "../rustc_abi" }
+diff --git a/compiler/rustc_codegen_cranelift/src/config.rs b/compiler/rustc_codegen_cranelift/src/config.rs
+index 31bc03744..39e7a126f 100644
+--- a/compiler/rustc_codegen_cranelift/src/config.rs
++++ b/compiler/rustc_codegen_cranelift/src/config.rs
+@@ -34,6 +34,8 @@ pub fn from_opts(opts: &[String]) -> Result<Self, String> {
+             }
+             match &**opt {
+                 "jit-mode" => config.jit_mode = true,
++                // Read where wasm objects are made: see `wasm::stack_limit`.
++                "wasm-stack-limit" => {}
+                 _ => return Err(format!("Unknown option `{}`", opt)),
+             }
+         }
+diff --git a/compiler/rustc_codegen_cranelift/src/wasm.rs b/compiler/rustc_codegen_cranelift/src/wasm.rs
+index 9c03068f7..fe1710b5c 100644
+--- a/compiler/rustc_codegen_cranelift/src/wasm.rs
++++ b/compiler/rustc_codegen_cranelift/src/wasm.rs
+@@ -48,6 +48,12 @@ pub(crate) fn threads(sess: &Session) -> bool {
+     target_features(sess).iter().any(|f| f == "atomics")
+ }
+ 
++/// Whether functions check their stack frames against `__stack_limit`
++/// (`-Cllvm-args=wasm-stack-limit`), which the program must define.
++pub(crate) fn stack_limit(sess: &Session) -> bool {
++    sess.opts.cg.llvm_args.iter().any(|a| a == "wasm-stack-limit")
++}
++
+ pub(crate) fn build_isa(sess: &Session, flags: settings::Flags) -> OwnedTargetIsa {
+     frontend_isa(flags, address_type(sess))
+         .unwrap_or_else(|err| sess.dcx().fatal(format!("failed to build TargetIsa: {err}")))
+@@ -86,20 +92,15 @@ pub(crate) fn make_module(tcx: TyCtxt<'_>, isa: OwnedTargetIsa) -> WasmObjectMod
+             features.push(f);
+         }
+     }
+-    WasmObjectModule::new(
+-        isa,
+-        ObjectOptions {
+-            config,
+-            threads,
+-            features,
+-            // Functions using what the backend does not support yet trap
+-            // when called, with a warning at compile time.
+-            stub_unsupported: std::env::var("CG_CLIF_WASM_STRICT").as_deref() != Ok("1"),
+-            libcall_names: cranelift_module::default_libcall_names(),
+-            import_names: {
+-                let names = wasm_import_names(tcx);
+-                Box::new(move |symbol| names.get(symbol).cloned())
+-            },
+-        },
+-    )
++    let mut options = ObjectOptions::default();
++    options.config = config;
++    options.threads = threads;
++    options.stack_limit = stack_limit(sess);
++    options.features = features;
++    // Functions using what the backend does not support yet trap when
++    // called, with a warning at compile time.
++    options.stub_unsupported = std::env::var("CG_CLIF_WASM_STRICT").as_deref() != Ok("1");
++    let names = wasm_import_names(tcx);
++    options.import_names = Box::new(move |symbol| names.get(symbol).cloned());
++    WasmObjectModule::new(isa, options)
+ }
+-- 
+2.56.0
+

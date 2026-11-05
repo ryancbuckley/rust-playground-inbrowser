@@ -167,9 +167,12 @@ configure `PATH` and `WASI_SYSROOT` (requires `tools/wasmtime`).
     host.
   - Built-in Clippy (`RUSTC_CLIPPY`) and `rustfmt` (`RUSTC_RUSTFMT`) entrypoints
     for WASI builds.
+  - A stack limit for threads std starts on WASI (`__stack_limit`, set in
+    `library/std/src/sys/pal/wasi/stack_overflow.rs`).
 - **`patches/cg_clif`**: WebAssembly target support using `clif-to-wasm`,
-  including custom wasm import modules (`#[link(wasm_import_module = "...")]`).
-  Kept in sync with the in-tree copy in `patches/rust`.
+  including custom wasm import modules (`#[link(wasm_import_module = "...")]`)
+  and stack limit checks (`-Cllvm-args=wasm-stack-limit`). Kept in sync with
+  the in-tree copy in `patches/rust`.
 - **`patches/wild`**: Empty. All required wasm linker fixes (main-thread TLS
   initialization with `--shared-memory` in wild-linker/wild#2838 and overridden
   weak data symbols) have been upstreamed to Wild.
@@ -188,6 +191,14 @@ configure `PATH` and `WASI_SYSROOT` (requires `tools/wasmtime`).
   so panics terminate with a WebAssembly trap and no debug info. Functions that
   use CLIF features not yet supported by `clif-to-wasm` are replaced with trap
   stubs and emit a compiler warning.
+- **Stack overflow in threads**: WebAssembly has no guard pages, and a spawned
+  thread's 2 MiB stack is allocated from the heap. In Debug builds, functions in
+  the user's code check their stack frames against the thread's limit and trap
+  if they would cross it (see `tests/stack-limit.rs`). Release builds, std and
+  the prebuilt crates (compiled by LLVM) do not check, so a thread that outgrows
+  its stack there writes over the heap below it. The main thread's stack is at
+  the bottom of memory, where an overflow wraps around past the end of memory
+  and traps in any build.
 - **Download size**: The page downloads about 58 MB on first load (`rustc.wasm`
   alone is 98 MB uncompressed / 23 MB gzipped). External crates are downloaded
   on demand (a few MB for most crates, or ~23 MB for `tokio` and its dependency

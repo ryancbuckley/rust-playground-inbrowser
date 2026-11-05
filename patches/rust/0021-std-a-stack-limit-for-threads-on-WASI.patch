@@ -1,0 +1,105 @@
+From c9ce37b9c9bfe61e6ef23071af11b2523b66d394 Mon Sep 17 00:00:00 2001
+From: Ryan Buckley <10402042+ryancbuckley@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 22:57:29 -0500
+Subject: [PATCH] std: a stack limit for threads on WASI
+
+Wasm has no guard pages, and a thread's stack comes from the heap, so a
+thread that outgrows it writes over whatever lies below. std now defines
+the __stack_limit global, and sets it for each thread it starts to just
+above the bottom of the thread's stack (clearing it when the thread
+ends, as the host may run the next thread on the same instance). Code
+compiled by cg_clif with -Cllvm-args=wasm-stack-limit traps instead of
+crossing it.
+---
+ .../std/src/sys/pal/wasi/stack_overflow.rs    | 76 ++++++++++++++++++-
+ 1 file changed, 74 insertions(+), 2 deletions(-)
+
+diff --git a/library/std/src/sys/pal/wasi/stack_overflow.rs b/library/std/src/sys/pal/wasi/stack_overflow.rs
+index 9fef1ef5a..b4c51a919 100644
+--- a/library/std/src/sys/pal/wasi/stack_overflow.rs
++++ b/library/std/src/sys/pal/wasi/stack_overflow.rs
+@@ -1,7 +1,79 @@
+-pub struct Handler;
++//! Wasm has no guard pages: a thread that outgrows its stack, which libc
++//! allocates from the heap, writes over whatever lies below it. Code compiled
++//! by cg_clif with `-Cllvm-args=wasm-stack-limit` instead traps when a frame
++//! would extend below the `__stack_limit` global, which each thread has its
++//! own copy of (each runs in its own instance). Threads std starts get their
++//! limit here. The main thread keeps 0: its stack is at the bottom of memory,
++//! where an overflow wraps around and traps anyway.
++
++use crate::arch::{asm, global_asm};
++use crate::{cmp, mem, ptr};
++
++global_asm!(".globaltype __stack_limit, i32", ".globl __stack_limit", "__stack_limit:");
++
++/// How far above the bottom of the stack the limit sits, at most. Code
++/// compiled by LLVM (std, libc) does not check the limit, and its frames may
++/// cross it before checked code runs again and traps; this keeps their writes
++/// within the thread's stack.
++const MAX_SLACK: usize = 16 * 1024;
++
++unsafe extern "C" {
++    // Not in the libc crate for WASI.
++    fn pthread_getattr_np(thread: libc::pthread_t, attr: *mut libc::pthread_attr_t) -> libc::c_int;
++    fn pthread_attr_getstack(
++        attr: *const libc::pthread_attr_t,
++        addr: *mut *mut libc::c_void,
++        size: *mut libc::size_t,
++    ) -> libc::c_int;
++}
++
++fn set_limit(limit: usize) {
++    // SAFETY: only the checks in cg_clif's code read the global.
++    unsafe {
++        asm!(
++            ".globaltype __stack_limit, i32",
++            "local.get {}",
++            "global.set __stack_limit",
++            in(local) limit,
++        )
++    }
++}
++
++/// The current thread's stack, as its lowest address and its size.
++fn current_stack() -> Option<(usize, usize)> {
++    // SAFETY: `attr` is initialized by `pthread_getattr_np` before it is
++    // read, and destroyed once.
++    unsafe {
++        let mut attr: libc::pthread_attr_t = mem::zeroed();
++        if pthread_getattr_np(libc::pthread_self(), &mut attr) != 0 {
++            return None;
++        }
++        let mut addr = ptr::null_mut();
++        let mut size = 0;
++        let ret = pthread_attr_getstack(&attr, &mut addr, &mut size);
++        libc::pthread_attr_destroy(&mut attr);
++        (ret == 0).then_some((addr.addr(), size))
++    }
++}
++
++pub struct Handler {
++    limited: bool,
++}
+ 
+ impl Handler {
+     pub unsafe fn new() -> Handler {
+-        Handler
++        let Some((low, size)) = current_stack() else { return Handler { limited: false } };
++        set_limit(low + cmp::min(size / 4, MAX_SLACK));
++        Handler { limited: true }
++    }
++}
++
++impl Drop for Handler {
++    fn drop(&mut self) {
++        // The host may run the next thread on this thread's instance, and a
++        // thread std does not start would otherwise inherit this limit.
++        if self.limited {
++            set_limit(0);
++        }
+     }
+ }
+-- 
+2.56.0
+
