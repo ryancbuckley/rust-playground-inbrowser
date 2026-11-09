@@ -1,0 +1,45 @@
+From 736a54ff0b0a8b975aa4986cd5b98b7e4725c6f0 Mon Sep 17 00:00:00 2001
+From: Ryan Buckley <10402042+ryancbuckley@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 17:13:02 -0500
+Subject: [PATCH] cg_clif: update to clif-to-wasm 0.3.0
+
+0.3.0 encodes 32-bit relocation addends as varint32 and wraps address
+arithmetic. Its one API change (RelocKind::has_addend became
+RelocKind::addend_kind) doesn't touch cg_clif.
+---
+ Cargo.lock                                  | 4 ++--
+ compiler/rustc_codegen_cranelift/Cargo.toml | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index bd76b461d..32fe77f6e 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -668,9 +668,9 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
+ 
+ [[package]]
+ name = "clif-to-wasm"
+-version = "0.2.0"
++version = "0.3.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "90277e3d2102c5e934936a1924e2815da705c2f46c44f9fb9d4ab2b18f46c704"
++checksum = "31d63694c680d80caff5e5b06baec7f0de2ad59a8cb232c13e107d47a98d9ee5"
+ dependencies = [
+  "cranelift-codegen",
+  "cranelift-module",
+diff --git a/compiler/rustc_codegen_cranelift/Cargo.toml b/compiler/rustc_codegen_cranelift/Cargo.toml
+index 6797a61d7..2ebf7d90d 100644
+--- a/compiler/rustc_codegen_cranelift/Cargo.toml
++++ b/compiler/rustc_codegen_cranelift/Cargo.toml
+@@ -23,7 +23,7 @@ object = { version = "0.40.0", default-features = false, features = ["std", "rea
+ indexmap = "2.0.0"
+ libloading = { version = "0.9.0", optional = true }
+ smallvec = "1.8.1"
+-clif-to-wasm = { version = "0.2.0", features = ["module"] }
++clif-to-wasm = { version = "0.3.0", features = ["module"] }
+ 
+ # As a member of the rustc workspace, use the compiler crates directly.
+ rustc_abi = { path = "../rustc_abi" }
+-- 
+2.56.0
+
